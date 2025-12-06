@@ -3,6 +3,9 @@ import '../entities/stop_entity.dart';
 import '../entities/shape_entity.dart';
 import '../entities/trip_entity.dart';
 import '../entities/stop_time_entity.dart';
+import '../entities/agency_entity.dart';
+import '../entities/frequency_entity.dart';
+import '../entities/transfer_entity.dart';
 import 'auth_repository.dart';
 
 abstract class GtfsStaticRepository {
@@ -29,6 +32,18 @@ abstract class GtfsStaticRepository {
   
   /// Fetch stop times by stop ID
   Future<Result<List<StopTimeEntity>>> getStopTimesByStopId(String stopId);
+  
+  /// Fetch all agencies
+  Future<Result<List<AgencyEntity>>> getAgencies();
+  
+  /// Fetch all frequencies
+  Future<Result<List<FrequencyEntity>>> getFrequencies();
+  
+  /// Fetch frequencies by trip ID
+  Future<Result<List<FrequencyEntity>>> getFrequenciesByTripId(String tripId);
+  
+  /// Fetch all transfers
+  Future<Result<List<TransferEntity>>> getTransfers();
   
   /// Check if static GTFS data is cached
   bool isCached();
