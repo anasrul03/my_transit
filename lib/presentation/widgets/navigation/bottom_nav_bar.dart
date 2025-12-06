@@ -3,13 +3,24 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/navigation_provider.dart';
 import '../../../core/theme/app_theme.dart';
 
+/// Bottom navigation bar widget for main app navigation
+/// 
+/// This widget displays a horizontal row of navigation tabs at the bottom
+/// of the screen. Each tab represents a different section of the app (Map,
+/// Routes, Favourites, Schedules, Suggestions). The selected tab is highlighted
+/// with the primary color, and tapping a tab switches to that section.
+/// 
+/// The widget is responsive and uses SafeArea to respect device notches and
+/// system UI elements.
 class BottomNavBar extends ConsumerWidget {
   const BottomNavBar({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final navigationState = ref.watch(navigationProvider);
-    final notifier = ref.read(navigationProvider.notifier);
+    // Watch navigation state to highlight the selected tab
+    final NavigationState navigationState = ref.watch(navigationProvider);
+    // Read the notifier to handle tab selection
+    final NavigationNotifier notifier = ref.read(navigationProvider.notifier);
 
     return Container(
       decoration: BoxDecoration(
@@ -68,12 +79,25 @@ class BottomNavBar extends ConsumerWidget {
   }
 }
 
+/// Individual navigation tab widget within the bottom navigation bar
+/// 
+/// This widget represents a single tab in the bottom navigation bar. It displays
+/// an icon and label, and changes appearance when selected. The widget is
+/// responsive and handles text overflow gracefully.
 class _NavTab extends StatelessWidget {
+  /// The text label displayed below the icon
   final String label;
+  
+  /// The icon displayed above the label
   final IconData icon;
+  
+  /// Whether this tab is currently selected
   final bool isSelected;
+  
+  /// Callback function called when the tab is tapped
   final VoidCallback onTap;
 
+  /// Creates a navigation tab with the specified properties
   const _NavTab({
     required this.label,
     required this.icon,
@@ -92,12 +116,14 @@ class _NavTab extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // Icon that changes color based on selection state
               Icon(
                 icon,
                 color: isSelected ? AppTheme.primaryColor : Colors.white70,
                 size: 22,
               ),
               const SizedBox(height: 2),
+              // Label text that changes color and weight based on selection
               Flexible(
                 child: Text(
                   label,

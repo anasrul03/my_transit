@@ -62,13 +62,10 @@ class ApiConstants {
   /// 
   /// This is the default agency shown when the app first loads. Users can
   /// change this filter to view vehicles from different agencies.
-  /// Uses a valid Malaysian agency code (e.g., 'ktmb' or 'rapid-rail-kl').
-  static const String defaultAgency = 'ktmb';
+  /// Uses a valid Malaysian agency code (e.g., 'rapid-bus-kl' or 'rapid-rail-kl').
+  static const String defaultAgency = 'rapid-bus-kl';
   
   // Malaysian Transit Agency Codes
-  
-  /// KTMB (Keretapi Tanah Melayu) agency code
-  static const String agencyKtmb = 'ktmb';
   
   /// Prasarana Rapid Rail KL agency code
   static const String agencyRapidRailKl = 'rapid-rail-kl';
@@ -79,35 +76,44 @@ class ApiConstants {
   /// Prasarana Rapid Bus Penang agency code
   static const String agencyRapidBusPenang = 'rapid-bus-penang';
   
-  /// Prasarana Rapid Bus Kuching agency code
-  static const String agencyRapidBusKuching = 'rapid-bus-kuching';
-  
   /// Prasarana Rapid Bus Kuantan agency code
   static const String agencyRapidBusKuantan = 'rapid-bus-kuantan';
   
-  /// BAS Melaka agency code
-  static const String agencyBasMelaka = 'bas-melaka';
+  /// Prasarana Rapid Bus MRT Feeder agency code
+  static const String agencyRapidBusMrtfeeder = 'rapid-bus-mrtfeeder';
   
-  /// BAS Negeri Sembilan agency code
-  static const String agencyBasNegeriSembilan = 'bas-negeri-sembilan';
+  /// KTMB (Keretapi Tanah Melayu Berhad) national railway operator
+  static const String agencyKtmb = 'ktmb';
   
-  /// BAS Pahang agency code
-  static const String agencyBasPahang = 'bas-pahang';
+  /// BAS.MY Kangar agency code
+  static const String agencyBasKangar = 'mybas-kangar';
   
-  /// BAS Perak agency code
-  static const String agencyBasPerak = 'bas-perak';
+  /// BAS.MY Alor Setar agency code
+  static const String agencyBasAlorSetar = 'mybas-alor-setar';
   
-  /// BAS Perlis agency code
-  static const String agencyBasPerlis = 'bas-perlis';
+  /// BAS.MY Kota Bharu agency code
+  static const String agencyBasKotaBharu = 'mybas-kota-bharu';
   
-  /// BAS Sabah agency code
-  static const String agencyBasSabah = 'bas-sabah';
+  /// BAS.MY Kuala Terengganu agency code
+  static const String agencyBasKualaTerengganu = 'mybas-kuala-terengganu';
   
-  /// BAS Sarawak agency code
-  static const String agencyBasSarawak = 'bas-sarawak';
+  /// BAS.MY Ipoh agency code
+  static const String agencyBasIpoh = 'mybas-ipoh';
   
-  /// BAS Terengganu agency code
-  static const String agencyBasTerengganu = 'bas-terengganu';
+  /// BAS.MY Seremban A agency code
+  static const String agencyBasSerembanA = 'mybas-seremban-a';
+  
+  /// BAS.MY Seremban B agency code
+  static const String agencyBasSerembanB = 'mybas-seremban-b';
+  
+  /// BAS.MY Melaka agency code
+  static const String agencyBasMelaka = 'mybas-melaka';
+  
+  /// BAS.MY Johor agency code
+  static const String agencyBasJohor = 'mybas-johor';
+  
+  /// BAS.MY Kuching agency code
+  static const String agencyBasKuching = 'mybas-kuching';
   
   /// List of all available Malaysian transit agencies
   static const List<String> availableAgencies = [
@@ -115,16 +121,18 @@ class ApiConstants {
     agencyRapidRailKl,
     agencyRapidBusKl,
     agencyRapidBusPenang,
-    agencyRapidBusKuching,
     agencyRapidBusKuantan,
+    agencyRapidBusMrtfeeder,
+    agencyBasKangar,
+    agencyBasAlorSetar,
+    agencyBasKotaBharu,
+    agencyBasKualaTerengganu,
+    agencyBasIpoh,
+    agencyBasSerembanA,
+    agencyBasSerembanB,
     agencyBasMelaka,
-    agencyBasNegeriSembilan,
-    agencyBasPahang,
-    agencyBasPerak,
-    agencyBasPerlis,
-    agencyBasSabah,
-    agencyBasSarawak,
-    agencyBasTerengganu,
+    agencyBasJohor,
+    agencyBasKuching,
   ];
   
   /// List of Prasarana agencies (require category parameter)
@@ -132,14 +140,26 @@ class ApiConstants {
     agencyRapidRailKl,
     agencyRapidBusKl,
     agencyRapidBusPenang,
-    agencyRapidBusKuching,
     agencyRapidBusKuantan,
+    agencyRapidBusMrtfeeder,
+  ];
+  
+  /// Prasarana category options for bus services
+  /// 
+  /// These categories are used as query parameters when fetching data
+  /// from Prasarana agencies. Each category represents a specific service type.
+  static const List<String> prasaranaCategories = [
+    agencyRapidBusKl,
+    agencyRapidBusMrtfeeder,
+    agencyRapidBusKuantan,
+    agencyRapidBusPenang,
   ];
   
   // GTFS Realtime Feed Types
   
   /// Vehicle positions feed type
-  static const String feedVehiclePositions = 'vehicle-positions';
+  /// Note: API uses singular "vehicle-position" not "vehicle-positions"
+  static const String feedVehiclePositions = 'vehicle-position';
   
   /// Trip updates feed type
   static const String feedTripUpdates = 'trip-updates';
@@ -161,6 +181,27 @@ class ApiConstants {
   /// Returns: true if the agency requires a category parameter, false otherwise
   static bool isPrasaranaAgency(String agency) {
     return prasaranaAgencies.contains(agency);
+  }
+  
+  /// Gets the available Prasarana categories for a given agency
+  /// 
+  /// For Prasarana bus agencies, this returns the list of valid category
+  /// options that can be used as query parameters. For non-Prasarana agencies
+  /// or Prasarana rail, returns an empty list.
+  /// 
+  /// [agency] - The agency code to get categories for
+  /// 
+  /// Returns: List of valid category codes for the agency, or empty list if not applicable
+  static List<String> getPrasaranaCategories(String agency) {
+    // Only bus services have category options
+    if (agency == agencyRapidBusKl || 
+        agency == agencyRapidBusPenang || 
+        agency == agencyRapidBusKuantan ||
+        agency == agencyRapidBusMrtfeeder) {
+      return prasaranaCategories;
+    }
+    // Rail services don't use categories
+    return [];
   }
 }
 

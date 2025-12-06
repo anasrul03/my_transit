@@ -11,6 +11,9 @@ class VehicleEntity extends Equatable {
   final DateTime timestamp;
   final String? operatorId;
   final String? vehicleLabel;
+  final List<String>? dataQualityWarnings;
+  final String? routeShortName;
+  final String? routeLongName;
 
   const VehicleEntity({
     required this.id,
@@ -23,7 +26,46 @@ class VehicleEntity extends Equatable {
     required this.timestamp,
     this.operatorId,
     this.vehicleLabel,
+    this.dataQualityWarnings,
+    this.routeShortName,
+    this.routeLongName,
   });
+
+  /// Creates a copy of this vehicle entity with the given fields replaced with new values
+  /// 
+  /// All fields are optional. If a field is not provided, the original value is kept.
+  /// This is useful for creating updated vehicle entities with new positions during interpolation.
+  VehicleEntity copyWith({
+    String? id,
+    String? routeId,
+    String? tripId,
+    double? latitude,
+    double? longitude,
+    double? bearing,
+    double? speed,
+    DateTime? timestamp,
+    String? operatorId,
+    String? vehicleLabel,
+    List<String>? dataQualityWarnings,
+    String? routeShortName,
+    String? routeLongName,
+  }) {
+    return VehicleEntity(
+      id: id ?? this.id,
+      routeId: routeId ?? this.routeId,
+      tripId: tripId ?? this.tripId,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      bearing: bearing ?? this.bearing,
+      speed: speed ?? this.speed,
+      timestamp: timestamp ?? this.timestamp,
+      operatorId: operatorId ?? this.operatorId,
+      vehicleLabel: vehicleLabel ?? this.vehicleLabel,
+      dataQualityWarnings: dataQualityWarnings ?? this.dataQualityWarnings,
+      routeShortName: routeShortName ?? this.routeShortName,
+      routeLongName: routeLongName ?? this.routeLongName,
+    );
+  }
 
   @override
   List<Object?> get props => [
@@ -37,6 +79,9 @@ class VehicleEntity extends Equatable {
         timestamp,
         operatorId,
         vehicleLabel,
+        dataQualityWarnings,
+        routeShortName,
+        routeLongName,
       ];
 }
 

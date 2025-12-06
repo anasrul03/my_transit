@@ -3,6 +3,9 @@ import '../../models/gtfs/stop_dto.dart';
 import '../../models/gtfs/shape_dto.dart';
 import '../../models/gtfs/trip_dto.dart';
 import '../../models/gtfs/stop_time_dto.dart';
+import '../../models/gtfs/agency_dto.dart';
+import '../../models/gtfs/frequency_dto.dart';
+import '../../models/gtfs/transfer_dto.dart';
 import '../../../core/errors/failures.dart';
 import '../../../domain/repositories/auth_repository.dart';
 
@@ -133,6 +136,54 @@ class GtfsStaticParser {
     } catch (e) {
       return Result.failure(
         GtfsParsingFailure('Failed to parse stop_times: ${e.toString()}'),
+      );
+    }
+  }
+
+  /// Parse agency.txt
+  /// 
+  /// Parses the agency.txt file which contains transit agency information.
+  /// This file is required in GTFS feeds and contains agency details like name, URL, and timezone.
+  Future<Result<List<AgencyDto>>> parseAgencies(String csvContent) async {
+    try {
+      final rows = _parseCsv(csvContent);
+      final agencies = rows.map((row) => AgencyDto.fromCsv(row)).toList();
+      return Result.success(agencies);
+    } catch (e) {
+      return Result.failure(
+        GtfsParsingFailure('Failed to parse agencies: ${e.toString()}'),
+      );
+    }
+  }
+
+  /// Parse frequencies.txt
+  /// 
+  /// Parses the frequencies.txt file which represents trips that operate on regular headways.
+  /// This file is optional and can represent frequency-based service or compressed schedule-based service.
+  Future<Result<List<FrequencyDto>>> parseFrequencies(String csvContent) async {
+    try {
+      final rows = _parseCsv(csvContent);
+      final frequencies = rows.map((row) => FrequencyDto.fromCsv(row)).toList();
+      return Result.success(frequencies);
+    } catch (e) {
+      return Result.failure(
+        GtfsParsingFailure('Failed to parse frequencies: ${e.toString()}'),
+      );
+    }
+  }
+
+  /// Parse transfers.txt
+  /// 
+  /// Parses the transfers.txt file which specifies additional rules and overrides for selected transfers.
+  /// This file is optional and provides explicit transfer rules between routes.
+  Future<Result<List<TransferDto>>> parseTransfers(String csvContent) async {
+    try {
+      final rows = _parseCsv(csvContent);
+      final transfers = rows.map((row) => TransferDto.fromCsv(row)).toList();
+      return Result.success(transfers);
+    } catch (e) {
+      return Result.failure(
+        GtfsParsingFailure('Failed to parse transfers: ${e.toString()}'),
       );
     }
   }

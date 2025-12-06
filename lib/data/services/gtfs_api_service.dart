@@ -22,12 +22,16 @@ class GtfsApiService {
   /// 
   /// API endpoint format: `https://api.data.gov.my/gtfs-realtime/<feed>/<agency>?category=<category>`
   /// Examples:
-  /// - KTMB: `https://api.data.gov.my/gtfs-realtime/vehicle-positions/ktmb`
-  /// - Prasarana: `https://api.data.gov.my/gtfs-realtime/vehicle-positions/rapid-rail-kl?category=rapid-rail-kl`
+  /// - Rapid Bus KL (Prasarana): `https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-kl`
+  /// - MRT Feeder (Prasarana): `https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-mrtfeeder`
+  /// - BAS Melaka: `https://api.data.gov.my/gtfs-realtime/vehicle-position/bas-melaka`
   /// 
-  /// [feed] - Feed type (default: 'vehicle-positions')
-  ///          Options: 'vehicle-positions', 'trip-updates', 'service-alerts'
-  /// [agency] - Required agency code (e.g., 'ktmb', 'rapid-rail-kl', 'bas-melaka')
+  /// Note: For Prasarana agencies, the URL path uses "prasarana" as the agency, and the actual
+  /// agency code (e.g., 'rapid-bus-kl', 'rapid-bus-mrtfeeder') is passed as the category query parameter.
+  /// 
+  /// [feed] - Feed type (default: 'vehicle-position')
+  ///          Options: 'vehicle-position', 'trip-updates', 'service-alerts'
+  /// [agency] - Required agency code (e.g., 'rapid-bus-kl', 'rapid-rail-kl', 'bas-melaka')
   /// [category] - Optional category parameter (required for Prasarana agencies)
   ///              If not provided and agency is Prasarana, category will default to agency code
   /// 
@@ -39,9 +43,16 @@ class GtfsApiService {
     required String agency,
     String? category,
   }) async {
+    // Determine the agency to use in the URL path
+    // For Prasarana agencies, use "prasarana" as the path agency
+    // For other agencies, use the agency code directly
+    final String urlPathAgency = ApiConstants.isPrasaranaAgency(agency)
+        ? 'prasarana'
+        : agency;
+    
     // Build URL with feed and agency in path
     // Base URL ends with '/', so we append feed/agency directly
-    final String path = '$feed/$agency';
+    final String path = '$feed/$urlPathAgency';
     final String baseUrl = '${ApiConstants.gtfsRealtimeBaseUrl}$path';
     
     // For Prasarana agencies, category is required
@@ -52,26 +63,31 @@ class GtfsApiService {
     }
     
     // Build URI with optional category query parameter
-    final Uri url = finalCategory != null
+    // Only add category for Prasarana agencies
+    final Uri url = (ApiConstants.isPrasaranaAgency(agency) && finalCategory != null)
         ? Uri.parse(baseUrl).replace(queryParameters: {'category': finalCategory})
         : Uri.parse(baseUrl);
     
     // Debug: Log the actual URL being called
     debugPrint('🌐 Fetching realtime feed from: $url');
     
-    // Set Accept header to request protobuf format (preferred) or octet-stream
-    final Map<String, String> headers = {
-      'Accept': 'application/x-protobuf, application/octet-stream',
-    };
-    
     try {
-      final http.Response response = await _client.get(url, headers: headers);
+      // No headers needed - let the API return its default format
+      final http.Response response = await _client.get(url);
       
       // Debug: Log response status
       debugPrint('📡 Response status: ${response.statusCode}');
       
       // Handle different HTTP status codes
       if (response.statusCode == 200) {
+        // Check for GTFS data quality warnings in response headers or body
+        // These warnings (E028, E003, E004) don't prevent data return but indicate quality issues
+        final List<String> dataQualityWarnings = _detectGtfsDataQualityWarnings(response);
+        if (dataQualityWarnings.isNotEmpty) {
+          debugPrint('⚠️ GTFS data quality warnings detected: ${dataQualityWarnings.join(", ")}');
+          // Log warnings but continue - these are non-blocking
+        }
+        
         // Validate Content-Type header matches expected protobuf format
         final String? contentType = response.headers['content-type'];
         if (contentType != null && 
@@ -80,9 +96,24 @@ class GtfsApiService {
           debugPrint('⚠️ Unexpected Content-Type: $contentType');
           // Still return the data if it's valid protobuf (check magic bytes if needed)
         }
+        
+        // Log response size for debugging
+        debugPrint('📦 Response body size: ${response.bodyBytes.length} bytes');
+        
+        // Check if response is empty
+        if (response.bodyBytes.isEmpty) {
+          debugPrint('⚠️ Empty response from API');
+          throw ServerFailure('Empty response from GTFS Realtime API');
+        }
+        
         debugPrint('✅ Successfully fetched realtime feed from: $url');
         return response.bodyBytes;
       } else {
+        // Log response body for debugging 404 errors
+        if (response.statusCode == 404) {
+          debugPrint('❌ 404 Error - Response body: ${response.body.substring(0, response.body.length > 500 ? 500 : response.body.length)}');
+          debugPrint('❌ Requested URL: $url');
+        }
         // Map HTTP status codes to appropriate failure types
         throw _handleHttpError(response.statusCode, response.body, 'realtime feed');
       }
@@ -102,9 +133,13 @@ class GtfsApiService {
   /// API endpoint format: `https://api.data.gov.my/gtfs-static/<agency>?category=<category>`
   /// Examples:
   /// - KTMB: `https://api.data.gov.my/gtfs-static/ktmb`
-  /// - Prasarana: `https://api.data.gov.my/gtfs-static/rapid-rail-kl?category=rapid-rail-kl`
+  /// - Prasarana: `https://api.data.gov.my/gtfs-static/prasarana?category=rapid-bus-kl`
+  /// - BAS Melaka: `https://api.data.gov.my/gtfs-static/mybas-melaka`
   /// 
-  /// [agency] - Required agency code (e.g., 'ktmb', 'rapid-rail-kl', 'bas-melaka')
+  /// Note: For Prasarana agencies, the URL path uses "prasarana" as the agency, and the actual
+  /// agency code (e.g., 'rapid-bus-kl', 'rapid-rail-kl') is passed as the category query parameter.
+  /// 
+  /// [agency] - Required agency code (e.g., 'rapid-bus-kl', 'rapid-rail-kl', 'mybas-melaka')
   /// [category] - Optional category parameter (required for Prasarana agencies)
   ///              If not provided and agency is Prasarana, category will default to agency code
   /// 
@@ -119,8 +154,15 @@ class GtfsApiService {
     required String agency,
     String? category,
   }) async {
+    // Determine the agency to use in the URL path
+    // For Prasarana agencies, use "prasarana" as the path agency
+    // For other agencies, use the agency code directly
+    final String urlPathAgency = ApiConstants.isPrasaranaAgency(agency)
+        ? 'prasarana'
+        : agency;
+    
     // Build URL with agency in path
-    final String baseUrl = '${ApiConstants.gtfsStaticBaseUrl}/$agency';
+    final String baseUrl = '${ApiConstants.gtfsStaticBaseUrl}/$urlPathAgency';
     
     // For Prasarana agencies, category is required
     // If not provided, use agency code as category
@@ -130,7 +172,8 @@ class GtfsApiService {
     }
     
     // Build URI with optional category query parameter
-    final Uri url = finalCategory != null
+    // Only add category for Prasarana agencies
+    final Uri url = (ApiConstants.isPrasaranaAgency(agency) && finalCategory != null)
         ? Uri.parse(baseUrl).replace(queryParameters: {'category': finalCategory})
         : Uri.parse(baseUrl);
     
@@ -325,6 +368,87 @@ class GtfsApiService {
       default:
         // Unknown error code
         return ServerFailure('Unexpected error (HTTP $statusCode): $errorMessage');
+    }
+  }
+
+  /// Detects GTFS data quality warnings in API response
+  /// 
+  /// Checks response headers and body for GTFS-specific error codes:
+  /// - E028: GPS coordinates outside service area
+  /// - E003: Legacy system issue (Prasarana)
+  /// - E004: Legacy system issue (Prasarana)
+  /// 
+  /// These warnings are non-blocking and don't prevent data return,
+  /// but should be logged and displayed to users.
+  /// 
+  /// [response] - The HTTP response to check for warnings
+  /// 
+  /// Returns: List of detected error codes (e.g., ['E028', 'E003'])
+  List<String> _detectGtfsDataQualityWarnings(http.Response response) {
+    final List<String> warnings = <String>[];
+    
+    // Check response headers for GTFS error codes
+    // Some APIs may include error codes in custom headers
+    for (final MapEntry<String, String> header in response.headers.entries) {
+      final String headerValue = header.value;
+      
+      // Check for GTFS error codes in header values
+      if (headerValue.contains('E028') || 
+          headerValue.contains('E003') || 
+          headerValue.contains('E004')) {
+        // Extract error codes from header
+        final RegExp errorCodePattern = RegExp(r'E\d{3}');
+        final Iterable<Match> matches = errorCodePattern.allMatches(headerValue);
+        for (final Match match in matches) {
+          final String errorCode = match.group(0)!;
+          if (!warnings.contains(errorCode)) {
+            warnings.add(errorCode);
+          }
+        }
+      }
+    }
+    
+    // Check response body for error codes (if response is text/JSON)
+    // Note: Protobuf responses won't have readable text, but some APIs
+    // might return JSON error messages in certain cases
+    try {
+      final String bodyText = response.body;
+      if (bodyText.isNotEmpty && 
+          (bodyText.contains('E028') || 
+           bodyText.contains('E003') || 
+           bodyText.contains('E004'))) {
+        final RegExp errorCodePattern = RegExp(r'E\d{3}');
+        final Iterable<Match> matches = errorCodePattern.allMatches(bodyText);
+        for (final Match match in matches) {
+          final String errorCode = match.group(0)!;
+          if (!warnings.contains(errorCode)) {
+            warnings.add(errorCode);
+          }
+        }
+      }
+    } catch (e) {
+      // Response body is not text (likely protobuf), ignore
+      debugPrint('Could not check response body for error codes (non-text response)');
+    }
+    
+    return warnings;
+  }
+  
+  /// Gets user-friendly error message for a GTFS error code
+  /// 
+  /// [errorCode] - The GTFS error code (e.g., 'E028', 'E003', 'E004')
+  /// 
+  /// Returns: Human-readable error message
+  static String getGtfsErrorMessage(String errorCode) {
+    switch (errorCode) {
+      case 'E028':
+        return 'GPS coordinates outside service area. Vehicle position may be inaccurate.';
+      case 'E003':
+        return 'Legacy system issue detected. Some data may be incomplete.';
+      case 'E004':
+        return 'Legacy system issue detected. Some data may be incomplete.';
+      default:
+        return 'Data quality warning: $errorCode';
     }
   }
 
