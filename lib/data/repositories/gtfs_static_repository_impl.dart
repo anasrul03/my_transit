@@ -23,14 +23,25 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   final GtfsApiService _apiService;
 
   // In-memory cache for parsed data
+  // Essential data kept in memory for performance
   List<RouteEntity>? _cachedRoutes;
   List<StopEntity>? _cachedStops;
-  Map<String, ShapeEntity>? _cachedShapes;
-  List<TripEntity>? _cachedTrips;
-  List<StopTimeEntity>? _cachedStopTimes;
   List<AgencyEntity>? _cachedAgencies;
-  List<FrequencyEntity>? _cachedFrequencies;
-  List<TransferEntity>? _cachedTransfers;
+  
+  // Optional data loaded on-demand to reduce memory usage
+  Map<String, ShapeEntity>? _cachedShapes; // Lazy-loaded shapes
+  List<TripEntity>? _cachedTrips; // Lazy-loaded trips
+  List<StopTimeEntity>? _cachedStopTimes; // Lazy-loaded stop times
+  List<FrequencyEntity>? _cachedFrequencies; // Lazy-loaded frequencies
+  List<TransferEntity>? _cachedTransfers; // Lazy-loaded transfers
+  
+  // Raw shape data stored for lazy parsing
+  String? _rawShapesData;
+  String? _rawTripsData;
+  String? _rawStopTimesData;
+  String? _rawFrequenciesData;
+  String? _rawTransfersData;
+  
   bool _isDataLoaded = false;
 
   GtfsStaticRepositoryImpl({
@@ -39,7 +50,40 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
     GtfsCacheManager? cacheManager,
   })  : _apiService = apiService ?? GtfsApiService(),
         _parser = parser ?? GtfsStaticParser(),
-        _cacheManager = cacheManager ?? GtfsCacheManager();
+        _cacheManager = cacheManager ?? GtfsCacheManager() {
+    // Clean up old temp files on initialization
+    _cleanupOldTempFiles();
+  }
+  
+  /// Clean up old temporary GTFS files
+  /// 
+  /// Removes temporary ZIP files older than 1 hour to prevent storage bloat.
+  /// This runs asynchronously on repository initialization.
+  Future<void> _cleanupOldTempFiles() async {
+    try {
+      final Directory tempDir = await getTemporaryDirectory();
+      final DateTime cutoffTime = DateTime.now().subtract(const Duration(hours: 1));
+      
+      // Find and delete old GTFS temp files
+      if (await tempDir.exists()) {
+        await for (final FileSystemEntity entity in tempDir.list()) {
+          if (entity is File && entity.path.contains('gtfs_static_')) {
+            try {
+              final FileStat stat = await entity.stat();
+              if (stat.modified.isBefore(cutoffTime)) {
+                await entity.delete();
+              }
+            } catch (e) {
+              // Continue even if we can't delete a specific file
+              continue;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Silently fail - temp cleanup is not critical
+    }
+  }
 
   Future<void> _loadStaticData({String agency = ApiConstants.defaultAgency}) async {
     if (_isDataLoaded) return;
@@ -101,52 +145,44 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
       final Archive archive = ZipDecoder().decodeBytes(zipFileBytes);
 
       // Parse each file
+      // Parse essential data immediately, store raw data for lazy loading
       for (final file in archive) {
-        final filename = file.name;
-        final content = String.fromCharCodes(file.content);
+        final String filename = file.name;
+        final String content = String.fromCharCodes(file.content);
 
         if (filename == 'routes.txt') {
+          // Essential: Parse routes immediately
           final result = await _parser.parseRoutes(content);
           if (result.isSuccess) {
             _cachedRoutes = result.data?.map((dto) => dto.toEntity()).toList();
           }
         } else if (filename == 'stops.txt') {
+          // Essential: Parse stops immediately
           final result = await _parser.parseStops(content);
           if (result.isSuccess) {
             _cachedStops = result.data?.map((dto) => dto.toEntity()).toList();
           }
-        } else if (filename == 'shapes.txt') {
-          final result = await _parser.parseShapes(content);
-          if (result.isSuccess) {
-            _cachedShapes = result.data?.map(
-              (id, dto) => MapEntry(id, dto.toEntity()),
-            );
-          }
-        } else if (filename == 'trips.txt') {
-          final result = await _parser.parseTrips(content);
-          if (result.isSuccess) {
-            _cachedTrips = result.data?.map((dto) => dto.toEntity()).toList();
-          }
-        } else if (filename == 'stop_times.txt') {
-          final result = await _parser.parseStopTimes(content);
-          if (result.isSuccess) {
-            _cachedStopTimes = result.data?.map((dto) => dto.toEntity()).toList();
-          }
         } else if (filename == 'agency.txt') {
+          // Essential: Parse agencies immediately
           final result = await _parser.parseAgencies(content);
           if (result.isSuccess) {
             _cachedAgencies = result.data?.map((dto) => dto.toEntity()).toList();
           }
+        } else if (filename == 'shapes.txt') {
+          // Optional: Store raw data for lazy loading
+          _rawShapesData = content;
+        } else if (filename == 'trips.txt') {
+          // Optional: Store raw data for lazy loading
+          _rawTripsData = content;
+        } else if (filename == 'stop_times.txt') {
+          // Optional: Store raw data for lazy loading
+          _rawStopTimesData = content;
         } else if (filename == 'frequencies.txt') {
-          final result = await _parser.parseFrequencies(content);
-          if (result.isSuccess) {
-            _cachedFrequencies = result.data?.map((dto) => dto.toEntity()).toList();
-          }
+          // Optional: Store raw data for lazy loading
+          _rawFrequenciesData = content;
         } else if (filename == 'transfers.txt') {
-          final result = await _parser.parseTransfers(content);
-          if (result.isSuccess) {
-            _cachedTransfers = result.data?.map((dto) => dto.toEntity()).toList();
-          }
+          // Optional: Store raw data for lazy loading
+          _rawTransfersData = content;
         }
       }
 
@@ -201,11 +237,76 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
     }
   }
 
+  /// Lazy-load shapes from raw data
+  /// 
+  /// Parses shape data only when first requested to reduce memory usage.
+  Future<void> _ensureShapesLoaded() async {
+    if (_cachedShapes != null) return;
+    
+    if (_rawShapesData != null) {
+      final result = await _parser.parseShapes(_rawShapesData!);
+      if (result.isSuccess) {
+        _cachedShapes = result.data?.map(
+          (String id, dynamic dto) => MapEntry(id, dto.toEntity()),
+        );
+      }
+    }
+  }
+  
+  /// Lazy-load trips from raw data
+  Future<void> _ensureTripsLoaded() async {
+    if (_cachedTrips != null) return;
+    
+    if (_rawTripsData != null) {
+      final result = await _parser.parseTrips(_rawTripsData!);
+      if (result.isSuccess) {
+        _cachedTrips = result.data?.map((dto) => dto.toEntity()).toList();
+      }
+    }
+  }
+  
+  /// Lazy-load stop times from raw data
+  Future<void> _ensureStopTimesLoaded() async {
+    if (_cachedStopTimes != null) return;
+    
+    if (_rawStopTimesData != null) {
+      final result = await _parser.parseStopTimes(_rawStopTimesData!);
+      if (result.isSuccess) {
+        _cachedStopTimes = result.data?.map((dto) => dto.toEntity()).toList();
+      }
+    }
+  }
+  
+  /// Lazy-load frequencies from raw data
+  Future<void> _ensureFrequenciesLoaded() async {
+    if (_cachedFrequencies != null) return;
+    
+    if (_rawFrequenciesData != null) {
+      final result = await _parser.parseFrequencies(_rawFrequenciesData!);
+      if (result.isSuccess) {
+        _cachedFrequencies = result.data?.map((dto) => dto.toEntity()).toList();
+      }
+    }
+  }
+  
+  /// Lazy-load transfers from raw data
+  Future<void> _ensureTransfersLoaded() async {
+    if (_cachedTransfers != null) return;
+    
+    if (_rawTransfersData != null) {
+      final result = await _parser.parseTransfers(_rawTransfersData!);
+      if (result.isSuccess) {
+        _cachedTransfers = result.data?.map((dto) => dto.toEntity()).toList();
+      }
+    }
+  }
+
   @override
   Future<Result<ShapeEntity?>> getShapeById(String shapeId) async {
     try {
       await _loadStaticData();
-      final shape = _cachedShapes?[shapeId];
+      await _ensureShapesLoaded();
+      final ShapeEntity? shape = _cachedShapes?[shapeId];
       return Result.success(shape);
     } catch (e) {
       if (e is Failure) {
@@ -221,6 +322,7 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<ShapeEntity>>> getShapes() async {
     try {
       await _loadStaticData();
+      await _ensureShapesLoaded();
       return Result.success(_cachedShapes?.values.toList() ?? []);
     } catch (e) {
       if (e is Failure) {
@@ -236,8 +338,9 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<TripEntity?>> getTripById(String tripId) async {
     try {
       await _loadStaticData();
-      final trip = _cachedTrips?.firstWhere(
-        (t) => t.id == tripId,
+      await _ensureTripsLoaded();
+      final TripEntity? trip = _cachedTrips?.firstWhere(
+        (TripEntity t) => t.id == tripId,
         orElse: () => throw Exception('Trip not found'),
       );
       return Result.success(trip);
@@ -253,9 +356,10 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<TripEntity>>> getTripsByRouteId(String routeId) async {
     try {
       await _loadStaticData();
-      final trips = _cachedTrips
-          ?.where((t) => t.routeId == routeId)
-          .toList() ?? [];
+      await _ensureTripsLoaded();
+      final List<TripEntity> trips = _cachedTrips
+          ?.where((TripEntity t) => t.routeId == routeId)
+          .toList() ?? <TripEntity>[];
       return Result.success(trips);
     } catch (e) {
       if (e is Failure) {
@@ -271,9 +375,10 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<StopTimeEntity>>> getStopTimesByTripId(String tripId) async {
     try {
       await _loadStaticData();
-      final stopTimes = _cachedStopTimes
-          ?.where((st) => st.tripId == tripId)
-          .toList() ?? [];
+      await _ensureStopTimesLoaded();
+      final List<StopTimeEntity> stopTimes = _cachedStopTimes
+          ?.where((StopTimeEntity st) => st.tripId == tripId)
+          .toList() ?? <StopTimeEntity>[];
       return Result.success(stopTimes);
     } catch (e) {
       if (e is Failure) {
@@ -289,9 +394,10 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<StopTimeEntity>>> getStopTimesByStopId(String stopId) async {
     try {
       await _loadStaticData();
-      final stopTimes = _cachedStopTimes
-          ?.where((st) => st.stopId == stopId)
-          .toList() ?? [];
+      await _ensureStopTimesLoaded();
+      final List<StopTimeEntity> stopTimes = _cachedStopTimes
+          ?.where((StopTimeEntity st) => st.stopId == stopId)
+          .toList() ?? <StopTimeEntity>[];
       return Result.success(stopTimes);
     } catch (e) {
       if (e is Failure) {
@@ -307,7 +413,7 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<AgencyEntity>>> getAgencies() async {
     try {
       await _loadStaticData();
-      return Result.success(_cachedAgencies ?? []);
+      return Result.success(_cachedAgencies ?? <AgencyEntity>[]);
     } catch (e) {
       if (e is Failure) {
         return Result.failure(e);
@@ -322,7 +428,8 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<FrequencyEntity>>> getFrequencies() async {
     try {
       await _loadStaticData();
-      return Result.success(_cachedFrequencies ?? []);
+      await _ensureFrequenciesLoaded();
+      return Result.success(_cachedFrequencies ?? <FrequencyEntity>[]);
     } catch (e) {
       if (e is Failure) {
         return Result.failure(e);
@@ -337,9 +444,10 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<FrequencyEntity>>> getFrequenciesByTripId(String tripId) async {
     try {
       await _loadStaticData();
-      final frequencies = _cachedFrequencies
-          ?.where((f) => f.tripId == tripId)
-          .toList() ?? [];
+      await _ensureFrequenciesLoaded();
+      final List<FrequencyEntity> frequencies = _cachedFrequencies
+          ?.where((FrequencyEntity f) => f.tripId == tripId)
+          .toList() ?? <FrequencyEntity>[];
       return Result.success(frequencies);
     } catch (e) {
       if (e is Failure) {
@@ -355,7 +463,8 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   Future<Result<List<TransferEntity>>> getTransfers() async {
     try {
       await _loadStaticData();
-      return Result.success(_cachedTransfers ?? []);
+      await _ensureTransfersLoaded();
+      return Result.success(_cachedTransfers ?? <TransferEntity>[]);
     } catch (e) {
       if (e is Failure) {
         return Result.failure(e);
@@ -374,6 +483,8 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   @override
   Future<void> clearCache() async {
     await _cacheManager.clearCache();
+    
+    // Clear parsed data
     _cachedRoutes = null;
     _cachedStops = null;
     _cachedShapes = null;
@@ -382,6 +493,14 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
     _cachedAgencies = null;
     _cachedFrequencies = null;
     _cachedTransfers = null;
+    
+    // Clear raw data
+    _rawShapesData = null;
+    _rawTripsData = null;
+    _rawStopTimesData = null;
+    _rawFrequenciesData = null;
+    _rawTransfersData = null;
+    
     _isDataLoaded = false;
   }
 }

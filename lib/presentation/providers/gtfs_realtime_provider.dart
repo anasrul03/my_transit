@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/errors/failures.dart';
@@ -50,10 +51,11 @@ class GtfsRealtimeState {
   }
 }
 
-class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
+class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> with WidgetsBindingObserver {
   final GtfsRealtimeRepository _repository;
   final MapFiltersNotifier _mapFiltersNotifier;
   Timer? _pollTimer;
+  bool _isAppInForeground = true;
 
   /// Creates a GtfsRealtimeNotifier instance
   /// 
@@ -65,7 +67,34 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
   })  : _repository = repository,
         _mapFiltersNotifier = mapFiltersNotifier,
         super(const GtfsRealtimeState()) {
+    // Register lifecycle observer to detect app background/foreground state
+    WidgetsBinding.instance.addObserver(this);
     _startPolling();
+  }
+  
+  /// Handle app lifecycle changes
+  /// 
+  /// Pauses polling when app goes to background to save battery and data.
+  /// Resumes polling when app returns to foreground.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    
+    final bool wasInForeground = _isAppInForeground;
+    _isAppInForeground = state == AppLifecycleState.resumed;
+    
+    // If app returned to foreground, resume polling and fetch immediately
+    if (!wasInForeground && _isAppInForeground) {
+      debugPrint('📱 App resumed - restarting vehicle position polling');
+      _startPolling();
+      fetchVehiclePositions(); // Fetch immediately to get fresh data
+    }
+    // If app went to background, pause polling to save resources
+    else if (wasInForeground && !_isAppInForeground) {
+      debugPrint('📱 App backgrounded - pausing vehicle position polling');
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
   }
 
   /// Starts polling for vehicle position updates
@@ -73,7 +102,18 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
   /// This method immediately fetches vehicle positions, then sets up a
   /// periodic timer to fetch updates at the interval specified in API constants.
   /// The polling ensures the map always shows current vehicle positions.
+  /// 
+  /// Only starts polling if app is in foreground to conserve resources.
   void _startPolling() {
+    // Cancel existing timer if any
+    _pollTimer?.cancel();
+    
+    // Only start polling if app is in foreground
+    if (!_isAppInForeground) {
+      debugPrint('📱 App in background - skipping polling start');
+      return;
+    }
+    
     // Fetch immediately to get initial vehicle positions
     fetchVehiclePositions();
 
@@ -81,7 +121,12 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
     // Uses the realtime poll interval from API constants (30 seconds)
     _pollTimer = Timer.periodic(
       ApiConstants.realtimePollInterval,
-      (_) => fetchVehiclePositions(),
+      (_) {
+        // Only fetch if app is in foreground
+        if (_isAppInForeground) {
+          fetchVehiclePositions();
+        }
+      },
     );
   }
 
@@ -138,14 +183,16 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
     }
   }
 
-  /// Diff-patches vehicle lists: Updates existing, adds new, removes old
+  /// Diff-patches vehicle lists: Updates existing, adds new, removes old and stale
   /// 
   /// This method efficiently merges old and new vehicle lists by:
-  /// 1. Starting with existing vehicles
+  /// 1. Starting with existing vehicles that are not stale
   /// 2. Updating or adding vehicles from the new list
   /// 3. Removing vehicles that are no longer in the feed
+  /// 4. Removing vehicles older than 5 minutes (stale vehicles)
   /// 
-  /// This approach minimizes unnecessary updates and improves performance.
+  /// This approach minimizes unnecessary updates, improves performance,
+  /// and reduces memory usage by removing inactive vehicles.
   /// 
   /// [oldVehicles] - The current list of vehicles
   /// [newVehicles] - The new list of vehicles from the API
@@ -158,9 +205,26 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
     // Create a map for efficient lookups and updates
     final Map<String, VehicleEntity> vehicleMap = <String, VehicleEntity>{};
 
-    // Step 1: Add all existing vehicles to the map
+    // Calculate cutoff time for stale vehicles (5 minutes ago)
+    final DateTime staleThreshold = DateTime.now().subtract(
+      const Duration(minutes: 5),
+    );
+
+    // Step 1: Add existing vehicles that are not stale to the map
+    // This filters out vehicles that haven't been updated in 5+ minutes
+    int staleCount = 0;
     for (final VehicleEntity vehicle in oldVehicles) {
+      // Keep only vehicles with recent timestamps
+      if (vehicle.timestamp.isAfter(staleThreshold)) {
       vehicleMap[vehicle.id] = vehicle;
+      } else {
+        staleCount++;
+      }
+    }
+    
+    // Log stale vehicle cleanup if any were removed
+    if (staleCount > 0) {
+      debugPrint('🧹 Removed $staleCount stale vehicles (>5 minutes old)');
     }
 
     // Step 2: Update or add vehicles from the new list
@@ -172,8 +236,25 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
     // Step 3: Remove vehicles that are no longer in the feed
     // Create a set of new vehicle IDs for efficient lookup
     final Set<String> newVehicleIds = newVehicles.map((VehicleEntity v) => v.id).toSet();
-    // Remove any vehicles not in the new list
-    vehicleMap.removeWhere((String id, VehicleEntity _) => !newVehicleIds.contains(id));
+    
+    // Count removed vehicles for logging
+    final int beforeRemoval = vehicleMap.length;
+    
+    // Remove any vehicles not in the new list (unless they're still fresh)
+    // We keep vehicles not in the feed if they're less than 5 minutes old
+    // This handles temporary API glitches or missing data
+    vehicleMap.removeWhere((String id, VehicleEntity vehicle) {
+      // Keep if in new list
+      if (newVehicleIds.contains(id)) return false;
+      
+      // Remove if too old (handled in step 1, but double-check)
+      return vehicle.timestamp.isBefore(staleThreshold);
+    });
+    
+    final int removedCount = beforeRemoval - vehicleMap.length;
+    if (removedCount > 0) {
+      debugPrint('🗑️ Removed $removedCount vehicles no longer in feed');
+    }
 
     // Return the merged list of vehicles
     return vehicleMap.values.toList();
@@ -181,7 +262,12 @@ class GtfsRealtimeNotifier extends StateNotifier<GtfsRealtimeState> {
 
   @override
   void dispose() {
+    // Clean up lifecycle observer
+    WidgetsBinding.instance.removeObserver(this);
+    
+    // Cancel polling timer
     _pollTimer?.cancel();
+    
     super.dispose();
   }
 }

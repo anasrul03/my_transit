@@ -62,8 +62,8 @@ class ApiConstants {
   /// 
   /// This is the default agency shown when the app first loads. Users can
   /// change this filter to view vehicles from different agencies.
-  /// Uses a valid Malaysian agency code (e.g., 'rapid-bus-kl' or 'rapid-rail-kl').
-  static const String defaultAgency = 'rapid-bus-kl';
+  /// Uses MRT Feeder as the default agency as per requirements.
+  static const String defaultAgency = 'rapid-bus-mrtfeeder';
   
   // Malaysian Transit Agency Codes
   

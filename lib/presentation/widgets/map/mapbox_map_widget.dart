@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:math' as math;
+// PERFORMANCE: Math import removed - animation calculations disabled
+// import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
@@ -10,7 +11,8 @@ import '../../../domain/entities/vehicle_entity.dart';
 import '../../../domain/entities/shape_entity.dart';
 import '../../../domain/entities/trip_entity.dart';
 import '../../../domain/entities/route_entity.dart';
-import '../../../domain/usecases/interpolate_vehicle_position.dart';
+// PERFORMANCE: Interpolation removed for optimization
+// import '../../../domain/usecases/interpolate_vehicle_position.dart';
 import '../../providers/connectivity_provider.dart';
 import '../../providers/gtfs_realtime_provider.dart';
 import '../../providers/gtfs_static_provider.dart';
@@ -22,21 +24,10 @@ import 'vehicle_info_sheet.dart';
 import 'vehicle_list_panel.dart';
 import '../../widgets/data_freshness_indicator.dart';
 import '../../widgets/gtfs_error_banner.dart';
+import 'vehicle_clustering_service.dart';
 
-/// Internal class to track vehicle animation state
-/// 
-/// Stores the last known position and timestamp for interpolation calculations.
-class _VehicleAnimationState {
-  final VehicleEntity lastVehicle;
-  final DateTime lastUpdateTime;
-  final double? lastInterpolationFactor;
-
-  _VehicleAnimationState({
-    required this.lastVehicle,
-    required this.lastUpdateTime,
-    this.lastInterpolationFactor,
-  });
-}
+// PERFORMANCE: Animation state class removed - animation disabled for performance
+// See lines ~1120 for disabled animation methods
 
 /// Widget that displays a Mapbox map with connectivity and error handling
 /// 
@@ -88,30 +79,19 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
   /// Maps routeId to RouteEntity for efficient lookups.
   final Map<String, RouteEntity?> _routeCache = <String, RouteEntity?>{};
   
-  /// Timer for smooth vehicle animation along route shapes
-  /// 
-  /// Runs at 0.1 second intervals (10 Hz) to animate vehicles smoothly.
-  Timer? _animationTimer;
-  
   /// Timer for debouncing marker updates
   /// 
   /// Prevents excessive marker updates when vehicle data changes rapidly.
-  /// Debounce delay: 250ms to balance responsiveness and performance.
+  /// Debounce delay: 100ms to balance responsiveness and performance.
   Timer? _markerUpdateTimer;
   
-  /// Last processed vehicle count to prevent redundant updates
+  /// Hash of last vehicle state to detect actual changes
   /// 
-  /// Tracks the number of vehicles that were last processed to avoid
-  /// unnecessary marker updates when the vehicle list hasn't actually changed.
-  int _lastProcessedVehicleCount = -1;
+  /// Used to prevent unnecessary marker updates when vehicle positions haven't changed.
+  String? _lastVehicleStateHash;
   
-  /// Map of vehicle IDs to their last known position and timestamp
-  /// 
-  /// Used for calculating interpolation progress for smooth animation.
-  final Map<String, _VehicleAnimationState> _vehicleAnimationStates = <String, _VehicleAnimationState>{};
-  
-  /// Use case for interpolating vehicle positions along shapes
-  final InterpolateVehiclePositionUseCase _interpolationUseCase = InterpolateVehiclePositionUseCase();
+  // PERFORMANCE: Interpolation use case removed - animation disabled
+  // final InterpolateVehiclePositionUseCase _interpolationUseCase = InterpolateVehiclePositionUseCase();
   
   /// Flag to track if this widget has been disposed
   bool _isDisposed = false;
@@ -126,6 +106,12 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
   /// 
   /// Used to track when filter settings change to trigger marker updates.
   MapFiltersState? _previousFiltersState;
+  
+  /// Current map zoom level for clustering calculations
+  /// 
+  /// Used to determine clustering behavior - vehicles are clustered more
+  /// aggressively at lower zoom levels and shown individually at higher zoom.
+  double _currentZoomLevel = 12.0;
 
   @override
   void initState() {
@@ -146,8 +132,8 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     // Cancel any pending update
     _markerUpdateTimer?.cancel();
     
-    // Schedule new update after debounce delay
-    _markerUpdateTimer = Timer(const Duration(milliseconds: 250), () {
+    // Schedule new update after debounce delay (reduced to 100ms for better responsiveness)
+    _markerUpdateTimer = Timer(const Duration(milliseconds: 100), () {
       if (!_isDisposed && mounted) {
         _updateVehicleMarkers();
       }
@@ -253,8 +239,8 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
       // Note: We'll implement click handling through map gesture detection
       // The click handler method is ready but needs to be wired up based on Mapbox API version
       
-      // Start animation timer for smooth vehicle movement
-      _startAnimationTimer();
+      // Animation timer disabled for performance - only animate selected vehicles if needed
+      // _startAnimationTimer(); // DISABLED: causes 400-1000 async ops every 100ms with 200-500 vehicles
       
       // Update markers with current vehicles if available
       // Use debounced update to prevent conflicts with listener-based updates
@@ -522,52 +508,79 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
   Future<void> _updateVehicleMarkers() async {
     // Early return if manager is not initialized or widget is disposed
     if (_circleAnnotationManager == null || _isDisposed || !mounted) {
-      debugPrint('⚠️ Cannot update markers: manager=${_circleAnnotationManager != null}, disposed=$_isDisposed, mounted=$mounted');
       return;
     }
     
     try {
-      // Get current vehicle positions and operator filter
+      // Get current vehicle positions
       final GtfsRealtimeState realtimeState = ref.read(gtfsRealtimeProvider);
-      final MapFiltersState filtersState = ref.read(mapFiltersProvider);
       final List<VehicleEntity> vehicles = realtimeState.vehicles;
       
-      // Skip update if vehicle count hasn't changed (prevents redundant updates)
-      if (vehicles.length == _lastProcessedVehicleCount && 
-          _lastProcessedVehicleCount > 0) {
-        debugPrint('⏭️ Skipping marker update: vehicle count unchanged (${vehicles.length})');
-        return;
-      }
+      // Generate hash of vehicle positions to detect actual changes
+      // This prevents redundant updates when vehicle positions haven't changed
+      final String currentStateHash = vehicles
+          .map((VehicleEntity v) => '${v.id}:${v.latitude.toStringAsFixed(5)},${v.longitude.toStringAsFixed(5)}')
+          .join('|');
       
-      _lastProcessedVehicleCount = vehicles.length;
-      debugPrint('📍 Updating markers: ${vehicles.length} total vehicles, selectedAgency=${filtersState.selectedAgency}');
+      if (currentStateHash == _lastVehicleStateHash) {
+        return; // No changes detected, skip update
+      }
+      _lastVehicleStateHash = currentStateHash;
       
       // Filter vehicles to only include those with valid coordinates
       // This is a safety check - most invalid coordinates should already be filtered during parsing
       // This prevents markers from being placed off-screen (e.g., at 0.0, 0.0)
       final List<VehicleEntity> validVehicles = <VehicleEntity>[];
-      int filteredCount = 0;
       
       for (final VehicleEntity vehicle in vehicles) {
         if (_isValidCoordinate(vehicle.latitude, vehicle.longitude)) {
           validVehicles.add(vehicle);
-        } else {
-          filteredCount++;
         }
       }
-      
-      // Only log if we filtered out vehicles (should be rare now)
-      if (filteredCount > 0) {
-        debugPrint('🚫 Filtered out $filteredCount vehicles with invalid coordinates (safety check)');
-      }
-      
-      debugPrint('✅ ${validVehicles.length} vehicles with valid coordinates will be displayed');
       
       // Note: Vehicles are already filtered by agency at the API level
       // The API fetches vehicles for the selected agency, so we don't need
       // to filter client-side. However, we keep this for safety and consistency.
       // If selectedAgency is null, show all vehicles (though API will use default)
-      final List<VehicleEntity> filteredVehicles = validVehicles;
+      
+      // Get current zoom level for clustering
+      double zoomLevel = _currentZoomLevel;
+      try {
+        final CameraState cameraState = await mapboxMap!.getCameraState();
+        zoomLevel = cameraState.zoom;
+        _currentZoomLevel = zoomLevel; // Cache for next update
+      } catch (e) {
+        // Silently use cached zoom level if camera state unavailable
+      }
+      
+      // Apply clustering to reduce marker count at lower zoom levels
+      final List<VehicleCluster> clusters = VehicleClusteringService.clusterVehicles(
+        validVehicles,
+        zoomLevel,
+      );
+      
+      // Convert clusters back to vehicles for rendering
+      // For clustered markers, we use the first vehicle as representative
+      final List<VehicleEntity> filteredVehicles = clusters.map((VehicleCluster cluster) {
+        if (cluster.isCluster) {
+          // For clusters, create a representative vehicle at cluster center
+          // Use the first vehicle's data but with cluster center coordinates
+          final VehicleEntity representative = cluster.vehicle;
+          return VehicleEntity(
+            id: 'cluster_${cluster.vehicles.map((VehicleEntity v) => v.id).join('_')}',
+            routeId: representative.routeId,
+            tripId: representative.tripId,
+            latitude: cluster.centerLatitude,
+            longitude: cluster.centerLongitude,
+            bearing: representative.bearing,
+            speed: representative.speed,
+            timestamp: representative.timestamp,
+            operatorId: representative.operatorId,
+            vehicleLabel: '${cluster.count} vehicles', // Show count for clusters
+          );
+        }
+        return cluster.vehicle;
+      }).toList();
       
       // Create set of new vehicle IDs for efficient lookup
       final Set<String> newVehicleIds = filteredVehicles
@@ -579,16 +592,16 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
           .toSet()
           .difference(newVehicleIds);
       
-      // Remove markers for vehicles no longer in the feed
-      for (final String vehicleId in vehiclesToRemove) {
-        final CircleAnnotation? annotation = _currentAnnotations[vehicleId];
-        if (annotation != null) {
-          await _circleAnnotationManager!.delete(annotation);
-          _currentAnnotations.remove(vehicleId);
-        }
-      }
+      // Batch remove markers for vehicles no longer in the feed
       if (vehiclesToRemove.isNotEmpty) {
-        debugPrint('🗑️ Removed ${vehiclesToRemove.length} vehicle markers');
+        // Delete all annotations in sequence (no async gaps for better performance)
+        for (final String vehicleId in vehiclesToRemove) {
+          final CircleAnnotation? annotation = _currentAnnotations[vehicleId];
+          if (annotation != null) {
+            _circleAnnotationManager!.delete(annotation); // Fire and forget for speed
+            _currentAnnotations.remove(vehicleId);
+          }
+        }
       }
       
       // Find vehicles to add (in new set but not in current set)
@@ -600,62 +613,61 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
           .toSet()
           .intersection(newVehicleIds);
       
-      // Create annotations for new vehicles
-      for (final VehicleEntity vehicle in filteredVehicles) {
-        if (vehiclesToAdd.contains(vehicle.id)) {
-          try {
-            // Double-check coordinates are valid before creating marker
-            if (!_isValidCoordinate(vehicle.latitude, vehicle.longitude)) {
-              debugPrint('⚠️ Skipping marker creation for vehicle ${vehicle.id}: invalid coordinates (${vehicle.latitude}, ${vehicle.longitude})');
-              continue;
-            }
-            
+      // Create annotations for new vehicles (optimized loop without excessive awaits)
+      if (vehiclesToAdd.isNotEmpty) {
+        final List<Future<void>> createFutures = <Future<void>>[];
+        
+        for (final VehicleEntity vehicle in filteredVehicles) {
+          if (vehiclesToAdd.contains(vehicle.id)) {
             final CircleAnnotationOptions options = 
                 VehicleMarkerService.createAnnotationFromVehicle(vehicle);
-            final CircleAnnotation annotation = 
-                await _circleAnnotationManager!.create(options);
-            _currentAnnotations[vehicle.id] = annotation;
-            debugPrint('✅ Created marker for vehicle ${vehicle.id} at (${vehicle.latitude}, ${vehicle.longitude})');
-          } catch (e) {
-            debugPrint('❌ Error creating marker for vehicle ${vehicle.id}: $e');
+            
+            // Queue creation without awaiting immediately (parallel execution)
+            createFutures.add(
+              _circleAnnotationManager!.create(options).then((CircleAnnotation annotation) {
+                _currentAnnotations[vehicle.id] = annotation;
+              }).catchError((Object e) {
+                // Silently handle creation errors
+              })
+            );
           }
         }
-      }
-      if (vehiclesToAdd.isNotEmpty) {
-        debugPrint('➕ Added ${vehiclesToAdd.length} vehicle markers');
+        
+        // Wait for all creates to complete in parallel
+        if (createFutures.isNotEmpty) {
+          await Future.wait(createFutures, eagerError: false);
+        }
       }
       
-      // Update annotations for existing vehicles (position changes)
-      // For updates, we delete and recreate the annotation
-      // This is simpler than trying to update individual properties
-      for (final VehicleEntity vehicle in filteredVehicles) {
-        if (vehiclesToUpdate.contains(vehicle.id)) {
-          // Double-check coordinates are valid before updating marker
-          if (!_isValidCoordinate(vehicle.latitude, vehicle.longitude)) {
-            debugPrint('⚠️ Skipping marker update for vehicle ${vehicle.id}: invalid coordinates (${vehicle.latitude}, ${vehicle.longitude})');
-            // Remove the marker if coordinates became invalid
+      // Update annotations for existing vehicles (optimized parallel delete+create)
+      if (vehiclesToUpdate.isNotEmpty) {
+        final List<Future<void>> updateFutures = <Future<void>>[];
+        
+        for (final VehicleEntity vehicle in filteredVehicles) {
+          if (vehiclesToUpdate.contains(vehicle.id)) {
             final CircleAnnotation? oldAnnotation = _currentAnnotations[vehicle.id];
             if (oldAnnotation != null) {
-              await _circleAnnotationManager!.delete(oldAnnotation);
-              _currentAnnotations.remove(vehicle.id);
+              final CircleAnnotationOptions options = 
+                  VehicleMarkerService.createAnnotationFromVehicle(vehicle);
+              
+              // Queue delete+create as single future (parallel execution)
+              updateFutures.add(
+                _circleAnnotationManager!.delete(oldAnnotation).then((_) {
+                  return _circleAnnotationManager!.create(options);
+                }).then((CircleAnnotation newAnnotation) {
+                  _currentAnnotations[vehicle.id] = newAnnotation;
+                }).catchError((Object e) {
+                  // Silently handle update errors
+                })
+              );
             }
-            continue;
           }
-          
-          final CircleAnnotation? oldAnnotation = _currentAnnotations[vehicle.id];
-          if (oldAnnotation != null) {
-            await _circleAnnotationManager!.delete(oldAnnotation);
-          }
-          
-          final CircleAnnotationOptions options = 
-              VehicleMarkerService.createAnnotationFromVehicle(vehicle);
-          final CircleAnnotation newAnnotation = 
-              await _circleAnnotationManager!.create(options);
-          _currentAnnotations[vehicle.id] = newAnnotation;
         }
-      }
-      if (vehiclesToUpdate.isNotEmpty) {
-        debugPrint('🔄 Updated ${vehiclesToUpdate.length} vehicle markers');
+        
+        // Wait for all updates to complete in parallel
+        if (updateFutures.isNotEmpty) {
+          await Future.wait(updateFutures, eagerError: false);
+        }
       }
     } catch (e) {
       debugPrint('❌ Error updating vehicle markers: $e');
@@ -1078,6 +1090,11 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     }
   }
 
+  // PERFORMANCE OPTIMIZATION: Animation methods disabled to eliminate 400-1000 async operations every 100ms
+  // These methods were causing severe lag with 200-500 vehicles due to constant delete/recreate of all markers
+  // Future enhancement: Implement selected-vehicle-only animation
+  
+  /* DISABLED FOR PERFORMANCE
   /// Starts the animation timer for smooth vehicle movement
   /// 
   /// The timer runs at 0.1 second intervals (10 Hz) to animate vehicles
@@ -1177,24 +1194,16 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
       debugPrint('❌ Error animating vehicles: $e');
     }
   }
+  */
 
-  /// Calculates the interpolation factor for a vehicle along its shape
-  /// 
-  /// [vehicle] - The vehicle entity
-  /// [shape] - The shape entity to interpolate along
-  /// 
-  /// Returns: Interpolation factor (0.0 to 1.0) representing vehicle's position along shape
-  /// This is a simplified calculation - in a production system, you might want to
-  /// use the vehicle's actual position to find the nearest point on the shape.
+  // PERFORMANCE: Interpolation methods disabled - animation removed
+  /* DISABLED
   double _calculateInterpolationFactor(VehicleEntity vehicle, ShapeEntity shape) {
     if (shape.points.isEmpty) {
       return 0.0;
     }
-
-    // Find the nearest point on the shape to the vehicle's current position
     double minDistance = double.infinity;
     int nearestIndex = 0;
-
     for (int i = 0; i < shape.points.length; i++) {
       final point = shape.points[i];
       final distance = _calculateDistance(
@@ -1203,56 +1212,42 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
         point.latitude,
         point.longitude,
       );
-
       if (distance < minDistance) {
         minDistance = distance;
         nearestIndex = i;
       }
     }
-
-    // Calculate interpolation factor based on nearest point index
-    // This is a simplified approach - you might want more sophisticated logic
     return nearestIndex / shape.points.length;
   }
+  */
 
-  /// Calculates distance between two points using Haversine formula
-  /// 
-  /// [lat1] - Latitude of first point
-  /// [lon1] - Longitude of first point
-  /// [lat2] - Latitude of second point
-  /// [lon2] - Longitude of second point
-  /// 
-  /// Returns: Distance in meters
+  // PERFORMANCE: Distance calculation methods disabled - animation removed
+  /* DISABLED
   double _calculateDistance(
     double lat1,
     double lon1,
     double lat2,
     double lon2,
   ) {
-    const double earthRadius = 6371000; // meters
+    const double earthRadius = 6371000;
     final double dLat = _toRadians(lat2 - lat1);
     final double dLon = _toRadians(lon2 - lon1);
-
     final double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_toRadians(lat1)) *
             math.cos(_toRadians(lat2)) *
             math.sin(dLon / 2) *
             math.sin(dLon / 2);
-
     final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
     return earthRadius * c;
   }
 
   double _toRadians(double degrees) => degrees * 3.141592653589793 / 180;
+  */
 
   @override
   void dispose() {
     // Mark as disposed to prevent any further state updates
     _isDisposed = true;
-    
-    // Cancel animation timer
-    _animationTimer?.cancel();
-    _animationTimer = null;
     
     // Cancel marker update timer
     _markerUpdateTimer?.cancel();
@@ -1265,7 +1260,6 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
       _circleAnnotationManager = null;
       _polylineAnnotationManager = null;
       _currentAnnotations.clear();
-      _vehicleAnimationStates.clear();
       _tripCache.clear();
       _routeCache.clear();
       _currentRouteHighlight = null;
@@ -1285,4 +1279,5 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     super.dispose();
   }
 }
+
 

@@ -74,22 +74,22 @@ class GtfsRealtimeParser {
           continue;
         }
         
-        try {
+          try {
           final VehicleEntity? vehicle = _parseVehiclePosition(
             entity.vehicle,
             entity.hasId() ? entity.id : 'unknown_$i',
-          );
+            );
           
           if (vehicle != null) {
             vehicles.add(vehicle);
           } else {
             skippedNoPosition++;
           }
-        } catch (e, stackTrace) {
-          // Log parsing error for this vehicle but continue with others
+          } catch (e, stackTrace) {
+            // Log parsing error for this vehicle but continue with others
           debugPrint('⚠️ Failed to parse vehicle entity ${entity.hasId() ? entity.id : i}: $e');
-          debugPrint('Stack trace: $stackTrace');
-        }
+            debugPrint('Stack trace: $stackTrace');
+          }
       }
       
       debugPrint('📊 Feed parsing summary:');

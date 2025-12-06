@@ -34,15 +34,15 @@ class MapFiltersState {
 
   /// Creates a MapFiltersState with the specified filter values
   /// 
-  /// [selectedAgency] - The agency to filter by. Defaults to defaultAgency.
+  /// [selectedAgency] - The agency to filter by. Defaults to MRT Feeder.
   /// [searchQuery] - Optional search query string
   /// [locationEnabled] - Whether location filtering is enabled. Defaults to false.
-  /// [selectedCategory] - Optional category for Prasarana agencies
+  /// [selectedCategory] - Optional category for Prasarana agencies. Defaults to MRT Feeder category.
   const MapFiltersState({
     this.selectedAgency = ApiConstants.defaultAgency,
     this.searchQuery,
     this.locationEnabled = false,
-    this.selectedCategory,
+    this.selectedCategory = ApiConstants.agencyRapidBusMrtfeeder, // Default to MRT Feeder category
   });
 
   /// Creates a copy of this state with the given fields replaced with new values
@@ -50,7 +50,8 @@ class MapFiltersState {
   /// [selectedAgency] - Optional new agency value
   /// [searchQuery] - Optional new search query (use null to clear)
   /// [locationEnabled] - Optional new location enabled status
-  /// [selectedCategory] - Optional new category value (use null to clear)
+  /// [selectedCategory] - Optional new category value
+  /// [clearCategory] - If true, clears the category (used when switching agencies)
   /// 
   /// Returns: A new MapFiltersState with updated values
   MapFiltersState copyWith({
@@ -58,12 +59,13 @@ class MapFiltersState {
     String? searchQuery,
     bool? locationEnabled,
     String? selectedCategory,
+    bool clearCategory = false,
   }) {
     return MapFiltersState(
       selectedAgency: selectedAgency ?? this.selectedAgency,
       searchQuery: searchQuery,
       locationEnabled: locationEnabled ?? this.locationEnabled,
-      selectedCategory: selectedCategory,
+      selectedCategory: clearCategory ? null : (selectedCategory ?? this.selectedCategory),
     );
   }
 }
@@ -92,8 +94,24 @@ class MapFiltersNotifier extends StateNotifier<MapFiltersState> {
   /// [agency] - The agency code to filter by (e.g., 'rapid-bus-kl', 'rapid-rail-kl'), or null to show all agencies
   /// 
   /// This updates the filter to show only vehicles from the specified agency.
+  /// For Prasarana agencies, the category is automatically set to match the agency.
+  /// For non-Prasarana agencies, the category is cleared.
   void setAgency(String? agency) {
-    state = state.copyWith(selectedAgency: agency);
+    // If setting a Prasarana agency, also set the category appropriately
+    // If setting a non-Prasarana agency or null, clear the category
+    if (agency != null && ApiConstants.isPrasaranaAgency(agency)) {
+      // For Prasarana agencies, set category to the agency code
+      state = state.copyWith(
+        selectedAgency: agency,
+        selectedCategory: agency,
+      );
+    } else {
+      // For non-Prasarana agencies or null, clear category
+      state = state.copyWith(
+        selectedAgency: agency,
+        clearCategory: true,
+      );
+    }
   }
   
   /// Sets the selected transit agency filter (legacy method for backward compatibility)
