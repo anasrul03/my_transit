@@ -1,0 +1,1503 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
+import '../../../core/services/mapbox_service.dart';
+import '../../../core/services/vehicle_marker_service.dart';
+import '../../../core/services/route_shape_service.dart';
+import '../../../domain/entities/vehicle_entity.dart';
+import '../../../domain/entities/shape_entity.dart';
+import '../../../domain/entities/trip_entity.dart';
+import '../../../domain/entities/route_entity.dart';
+import '../../providers/connectivity_provider.dart';
+import '../../providers/gtfs_realtime_provider.dart';
+import '../../providers/gtfs_static_provider.dart';
+import '../../providers/map_camera_provider.dart';
+import '../../providers/map_filters_provider.dart';
+import '../../providers/map_widget_provider.dart';
+import '../../providers/route_highlight_provider.dart';
+import '../../providers/vehicle_interpolation_provider.dart';
+import 'operator_selection_button.dart';
+import 'vehicle_info_sheet.dart';
+import 'vehicle_list_panel.dart';
+import '../../widgets/data_freshness_indicator.dart';
+import '../../widgets/gtfs_error_banner.dart';
+import 'vehicle_clustering_service.dart';
+
+// PERFORMANCE: Animation state class removed - animation disabled for performance
+// See lines ~1120 for disabled animation methods
+
+/// Widget that displays a Mapbox map with connectivity and error handling
+/// 
+/// This widget manages the Mapbox map initialization, loading states,
+/// error handling, and connectivity checks. It uses Riverpod for state
+/// management instead of setState to comply with project coding standards.
+class MapboxMapWidget extends ConsumerStatefulWidget {
+  const MapboxMapWidget({super.key});
+
+  @override
+  ConsumerState<MapboxMapWidget> createState() => _MapboxMapWidgetState();
+}
+
+class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
+  /// Reference to the MapboxMap instance once created
+  MapboxMap? mapboxMap;
+  
+  /// Reference to the CircleAnnotationManager for vehicle markers
+  /// 
+  /// This manager handles all vehicle markers on the map, allowing
+  /// efficient addition, update, and removal of markers.
+  /// Using CircleAnnotation instead of PointAnnotation because it doesn't
+  /// require images and is simpler to use.
+  CircleAnnotationManager? _circleAnnotationManager;
+  
+  /// Reference to the PolylineAnnotationManager for route shape drawing
+  /// 
+  /// This manager handles drawing route shapes as polylines when vehicles are clicked.
+  PolylineAnnotationManager? _polylineAnnotationManager;
+  
+  /// Map of vehicle IDs to their CircleAnnotation objects
+  /// 
+  /// This is used to efficiently track which vehicles are currently
+  /// displayed and their annotation objects for updates and deletion.
+  final Map<String, CircleAnnotation> _currentAnnotations = <String, CircleAnnotation>{};
+  
+  /// Currently highlighted route polyline annotation, if any
+  /// 
+  /// This is used to remove the previous highlight when a new one is set.
+  PolylineAnnotation? _currentRouteHighlight;
+  
+  /// Cache for trip lookups to avoid repeated repository calls
+  /// 
+  /// Maps tripId to TripEntity for efficient lookups.
+  final Map<String, TripEntity?> _tripCache = <String, TripEntity?>{};
+  
+  /// Cache for route lookups to avoid repeated repository calls
+  /// 
+  /// Maps routeId to RouteEntity for efficient lookups.
+  final Map<String, RouteEntity?> _routeCache = <String, RouteEntity?>{};
+  
+  /// Timer for debouncing marker updates
+  /// 
+  /// Prevents excessive marker updates when vehicle data changes rapidly.
+  /// Debounce delay: 100ms to balance responsiveness and performance.
+  Timer? _markerUpdateTimer;
+  
+  /// Hash of last vehicle state to detect actual changes
+  /// 
+  /// Used to prevent unnecessary marker updates when vehicle positions haven't changed.
+  String? _lastVehicleStateHash;
+  
+  // PERFORMANCE: Interpolation use case removed - animation disabled
+  // final InterpolateVehiclePositionUseCase _interpolationUseCase = InterpolateVehiclePositionUseCase();
+  
+  /// Flag to track if this widget has been disposed
+  bool _isDisposed = false;
+
+  /// Previous vehicle state to detect changes
+  /// 
+  /// Used to track when vehicle data actually changes to avoid
+  /// unnecessary marker updates.
+  GtfsRealtimeState? _previousRealtimeState;
+  
+  /// Previous filter state to detect changes
+  /// 
+  /// Used to track when filter settings change to trigger marker updates.
+  MapFiltersState? _previousFiltersState;
+  
+  /// Current map zoom level for clustering calculations
+  /// 
+  /// Used to determine clustering behavior - vehicles are clustered more
+  /// aggressively at lower zoom levels and shown individually at higher zoom.
+  double _currentZoomLevel = 12.0;
+  
+  /// Timer for updating viewport bounds periodically
+  /// 
+  /// Updates the viewport bounds in the interpolation provider when the
+  /// camera position changes significantly.
+  Timer? _viewportUpdateTimer;
+  
+  /// Last known camera center for detecting significant camera movements
+  Position? _lastCameraCenter;
+  
+  /// Threshold for camera movement to trigger viewport update (degrees)
+  /// 
+  /// Only update viewport if camera moved more than this distance to avoid
+  /// excessive updates during small adjustments.
+  static const double _cameraMovementThreshold = 0.01;
+
+  @override
+  void initState() {
+    super.initState();
+    // Delay connectivity check until after the widget tree is built
+    // This prevents Riverpod errors about modifying providers during build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeMap();
+    });
+  }
+
+  /// Schedules a debounced marker update
+  /// 
+  /// Cancels any pending marker update timer and schedules a new one
+  /// after a short delay (250ms). This prevents excessive updates when
+  /// vehicle data changes rapidly.
+  void _scheduleMarkerUpdate() {
+    // Cancel any pending update
+    _markerUpdateTimer?.cancel();
+    
+    // Schedule new update after debounce delay (reduced to 100ms for better responsiveness)
+    _markerUpdateTimer = Timer(const Duration(milliseconds: 100), () {
+      if (!_isDisposed && mounted) {
+        _updateVehicleMarkers();
+      }
+    });
+  }
+
+  /// Initializes the map by checking connectivity first
+  /// 
+  /// This ensures we have internet connectivity before attempting
+  /// to load the map, providing better user feedback.
+  Future<void> _initializeMap() async {
+    // Check connectivity first to provide immediate feedback
+    // This is now safe to call after the build phase completes
+    await ref.read(connectivityProvider.notifier).checkConnectivity();
+  }
+
+  /// Callback invoked when the Mapbox map is successfully created
+  /// 
+  /// [mapboxMap] - The created MapboxMap instance
+  /// 
+  /// This method handles the map creation, sets the initial camera position,
+  /// and updates the widget state to reflect successful initialization.
+  void _onMapCreated(MapboxMap mapboxMap) {
+    final MapWidgetState currentState = ref.read(mapWidgetStateProvider);
+    
+    // Prevent duplicate map creations
+    if (_isDisposed || currentState.mapCreated) return;
+    
+    // Store the map reference and mark as created
+    this.mapboxMap = mapboxMap;
+    ref.read(mapWidgetStateProvider.notifier).markMapCreated();
+    
+    debugPrint('✅ Mapbox map created successfully (count: ${currentState.mapCreationCount + 1})');
+    
+    // Set initial camera position after a short delay to ensure map is ready
+    // This delay helps prevent race conditions during map initialization
+    Future.delayed(const Duration(milliseconds: 800), () async {
+      if (_isDisposed || !mounted) return;
+      
+      try {
+        // Set camera to Kuala Lumpur coordinates (default location)
+        await mapboxMap.setCamera(
+          CameraOptions(
+            center: Point(coordinates: Position(101.6869, 3.1390)), // KL coordinates
+            zoom: 12.0,
+            bearing: 0.0,
+            pitch: 0.0,
+          ),
+        );
+        debugPrint('✅ Camera position set successfully');
+        
+        // Clear loading state if no errors occurred
+        if (mounted && !currentState.hasError) {
+          ref.read(mapWidgetStateProvider.notifier).setLoading(false);
+        }
+      } catch (e) {
+        debugPrint('❌ Error setting camera: $e');
+        // Update error state if camera setup fails
+        if (mounted) {
+          ref.read(mapWidgetStateProvider.notifier).setError(
+            hasError: true,
+            errorMessage: e.toString(),
+          );
+        }
+      }
+    });
+  }
+  
+  /// Callback invoked when the map style has finished loading
+  /// 
+  /// [data] - Event data containing style loading information
+  /// 
+  /// This clears any previous errors once the style loads successfully,
+  /// indicating the map is ready for use. It also initializes the
+  /// PointAnnotationManager for vehicle markers.
+  void _onStyleLoadedListener(StyleLoadedEventData data) async {
+    final MapWidgetState currentState = ref.read(mapWidgetStateProvider);
+    
+    // Ignore style loaded events if map hasn't been created yet
+    if (!currentState.mapCreated || mapboxMap == null) {
+      debugPrint('⚠️ Style loaded before map created - ignoring');
+      return;
+    }
+    
+    debugPrint('✅ Map style loaded successfully');
+    
+    // Initialize CircleAnnotationManager after style loads
+    // This must be done after the style is loaded to ensure the manager
+    // can properly attach to the map style
+    // Using CircleAnnotation instead of PointAnnotation because it doesn't
+    // require images and is simpler to use
+    try {
+      _circleAnnotationManager = await mapboxMap!.annotations
+          .createCircleAnnotationManager();
+      debugPrint('✅ CircleAnnotationManager created successfully');
+      
+      // Initialize PolylineAnnotationManager for route shape drawing
+      _polylineAnnotationManager = await mapboxMap!.annotations
+          .createPolylineAnnotationManager();
+      debugPrint('✅ PolylineAnnotationManager created successfully');
+      
+      // Note: Map tap detection removed - vehicles are selected from the list panel
+      // Vehicle selection triggers camera movement and route highlighting via provider
+      
+      // Start vehicle interpolation system
+      _startInterpolationSystem();
+      
+      // Update markers with current vehicles if available
+      // Use debounced update to prevent conflicts with listener-based updates
+      if (mounted) {
+        _scheduleMarkerUpdate();
+      }
+    } catch (e) {
+      debugPrint('❌ Error creating annotation managers: $e');
+    }
+    
+    // Clear error state if style loads successfully after an error
+    if (mounted && currentState.hasError) {
+      ref.read(mapWidgetStateProvider.notifier).clearError();
+    }
+  }
+  
+  /// Callback invoked when an error occurs during map loading
+  /// 
+  /// [data] - Event data containing error message and type
+  /// 
+  /// This updates the error state to display the error message to the user
+  /// and allows them to retry the map loading.
+  void _onMapLoadErrorListener(MapLoadingErrorEventData data) {
+    debugPrint('❌ Map load error: ${data.message}, type: ${data.type}');
+    
+    // Update error state with the error message from Mapbox
+    if (mounted) {
+      ref.read(mapWidgetStateProvider.notifier).setError(
+        hasError: true,
+        errorMessage: data.message,
+      );
+    }
+  }
+
+
+  /// Retries the map connection after an error
+  /// 
+  /// This method resets the error state, checks connectivity again,
+  /// and prepares the widget for a new map initialization attempt.
+  Future<void> _retryConnection() async {
+    final MapWidgetStateNotifier notifier = ref.read(mapWidgetStateProvider.notifier);
+    
+    // Set retry state and reset error/map creation flags
+    notifier.setRetrying(true);
+    notifier.resetMapCreation();
+
+    // Force a connectivity check to ensure we have internet
+    await ref.read(connectivityProvider.notifier).checkConnectivity();
+    
+    // Small delay to allow connectivity check to complete
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    // Reset retry state and set loading state for new attempt
+    if (mounted) {
+      notifier.setRetrying(false);
+      notifier.setLoading(true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Watch connectivity, map widget state, vehicle positions, and operator filter
+    final ConnectivityState connectivityState = ref.watch(connectivityProvider);
+    final MapWidgetState mapWidgetState = ref.watch(mapWidgetStateProvider);
+    final RouteHighlightState highlightState = ref.watch(routeHighlightProvider);
+    final GtfsRealtimeState realtimeState = ref.watch(gtfsRealtimeProvider); // Watch for vehicle updates
+    final MapFiltersState filtersState = ref.watch(mapFiltersProvider); // Watch for filter changes
+    
+    // Listen to interpolation state changes to update markers with interpolated positions
+    // This must be in build method to comply with Riverpod requirements
+    // Use post-frame callback to avoid modifying provider state during build
+    ref.listen<InterpolationGlobalState>(
+      vehicleInterpolationProvider,
+      (InterpolationGlobalState? previous, InterpolationGlobalState current) {
+        if (mapWidgetState.mapCreated && !_isDisposed && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!_isDisposed && mounted) {
+              _updateInterpolatedMarkers(current);
+            }
+          });
+        }
+      },
+    );
+    
+    // Listen to camera control requests from vehicle list
+    // This allows the vehicle list to trigger camera movements and vehicle selection
+    ref.listen<MapCameraState>(
+      mapCameraProvider,
+      (MapCameraState? previous, MapCameraState current) {
+        if (mapWidgetState.mapCreated && 
+            !_isDisposed && 
+            mounted && 
+            current.targetVehicle != null &&
+            current.requestTime != null) {
+          // Check if this is a new request (different timestamp)
+          if (previous?.requestTime != current.requestTime) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!_isDisposed && mounted) {
+                _moveCameraToVehicle(current.targetVehicle!);
+              }
+            });
+          }
+        }
+      },
+    );
+    
+    // Check if vehicle data or filters changed and schedule marker update
+    // This is more efficient than post-frame callbacks on every rebuild
+    if (mapWidgetState.mapCreated && 
+        _circleAnnotationManager != null && 
+        !_isDisposed) {
+      // Check if vehicle data changed
+      final bool vehiclesChanged = _previousRealtimeState == null ||
+          _previousRealtimeState!.vehicles.length != realtimeState.vehicles.length ||
+          _previousRealtimeState!.lastUpdate != realtimeState.lastUpdate;
+      
+      // Check if filters changed
+      final bool filtersChanged = _previousFiltersState == null ||
+          _previousFiltersState!.selectedAgency != filtersState.selectedAgency ||
+          _previousFiltersState!.selectedCategory != filtersState.selectedCategory;
+      
+      if (vehiclesChanged || filtersChanged) {
+        _previousRealtimeState = realtimeState;
+        _previousFiltersState = filtersState;
+        _scheduleMarkerUpdate();
+      }
+    }
+    
+    // Update route highlight when highlight state changes
+    if (mapWidgetState.mapCreated && 
+        _polylineAnnotationManager != null && 
+        !_isDisposed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_isDisposed) {
+          _updateRouteHighlight(highlightState);
+        }
+      });
+    }
+
+    // Check if Mapbox access token is configured
+    // Without the token, the map cannot be initialized
+    if (!MapboxService.isConfigured) {
+      return _buildErrorState(
+        icon: Icons.vpn_key_off,
+        title: 'Mapbox Access Token Required',
+        message: 'Mapbox access token is not configured.\n\n'
+            'To fix this:\n'
+            '1. Get a token from https://account.mapbox.com/access-tokens/\n'
+            '2. Run: flutter run --dart-define ACCESS_TOKEN=pk.your_token_here\n\n'
+            'Note: The token must start with "pk." (public token)',
+        action: null,
+      );
+    }
+
+    // Show no connection error only before map is created
+    // Once map is created, we show a connectivity indicator instead
+    if (!connectivityState.isConnected && 
+        !mapWidgetState.isRetrying && 
+        !mapWidgetState.mapCreated) {
+      return _buildErrorState(
+        icon: Icons.wifi_off,
+        title: 'No Internet Connection',
+        message: 'Please check your internet connection and try again',
+        action: _buildRetryButton(),
+      );
+    }
+
+    // Show loading state while checking connectivity or retrying
+    if ((connectivityState.isChecking || mapWidgetState.isRetrying) && 
+        !mapWidgetState.mapCreated) {
+      return _buildLoadingState('Checking connection...');
+    }
+
+    // Build the map widget with overlays
+    // Once map is created, we keep it stable to prevent unnecessary rebuilds
+    return Stack(
+      children: [
+        // Map Widget with native Mapbox tap detection
+        // Tap detection is handled by CircleAnnotationManager's click listener
+        // which is more reliable than GestureDetector and doesn't conflict with map gestures
+        MapWidget(
+          key: const ValueKey("mapWidget_stable"),
+          cameraOptions: CameraOptions(
+            center: Point(coordinates: Position(101.6869, 3.1390)), // KL coordinates
+            zoom: 12.0,
+            bearing: 0.0,
+            pitch: 0.0,
+          ),
+          styleUri: MapboxService.darkStyleUrl, // Dark theme for better visibility
+          textureView: true,
+          onMapCreated: _onMapCreated,
+          onStyleLoadedListener: _onStyleLoadedListener,
+          onMapLoadErrorListener: _onMapLoadErrorListener,
+        ),
+        
+        // Loading overlay - shown while map is loading and no errors
+        if (mapWidgetState.isLoading && !mapWidgetState.hasError)
+          _buildLoadingState('Loading map tiles...'),
+        
+        // Error overlay - shown when an error occurs
+        if (mapWidgetState.hasError)
+          _buildErrorOverlay(),
+        
+        // Connectivity indicator - shown at top when map is created but offline
+        if (mapWidgetState.mapCreated)
+          _buildConnectivityIndicator(connectivityState),
+        
+        // Operator selection floating action button
+        // Positioned at bottom-right when map is created
+        if (mapWidgetState.mapCreated)
+          Positioned(
+            bottom: 16,
+            right: 16,
+            child: const OperatorSelectionButton(),
+          ),
+        
+        // Data freshness indicator - shown at top-left when map is created
+        if (mapWidgetState.mapCreated)
+          Positioned(
+            top: 16,
+            left: 16,
+            child: Consumer(
+              builder: (BuildContext context, WidgetRef ref, Widget? child) {
+                final GtfsRealtimeState realtimeState = ref.watch(gtfsRealtimeProvider);
+                return DataFreshnessIndicator(
+                  lastUpdate: realtimeState.lastUpdate,
+                  compact: true,
+                );
+              },
+            ),
+          ),
+        
+        // Error banner - shown at top when there are data quality warnings
+        if (mapWidgetState.mapCreated)
+          Positioned(
+            top: 60,
+            left: 16,
+            right: 16,
+            child: Consumer(
+              builder: (BuildContext context, WidgetRef ref, Widget? child) {
+                final GtfsRealtimeState realtimeState = ref.watch(gtfsRealtimeProvider);
+                // Collect all unique error codes from vehicles
+                final Set<String> allErrorCodes = <String>{};
+                for (final VehicleEntity vehicle in realtimeState.vehicles) {
+                  if (vehicle.dataQualityWarnings != null) {
+                    allErrorCodes.addAll(vehicle.dataQualityWarnings!);
+                  }
+                }
+                if (allErrorCodes.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return GtfsErrorBanner(
+                  errorCodes: allErrorCodes.toList(),
+                  compact: true,
+                );
+              },
+            ),
+          ),
+        
+        // Vehicle list panel - shown at top-right when map is created
+        if (mapWidgetState.mapCreated)
+          const VehicleListPanel(),
+      ],
+    );
+  }
+  
+
+
+  /// Checks if coordinates are valid for Malaysia
+  /// 
+  /// [latitude] - The latitude to validate
+  /// [longitude] - The longitude to validate
+  /// 
+  /// Returns: true if coordinates are within Malaysia bounds, false otherwise
+  /// Malaysia bounds: approximately 0.85°N to 7.36°N, 99.64°E to 119.27°E
+  /// Also rejects (0.0, 0.0) which indicates missing position data
+  bool _isValidCoordinate(double latitude, double longitude) {
+    // Reject (0.0, 0.0) which is the default for missing position data
+    // This coordinate is in the Gulf of Guinea, far from Malaysia
+    if (latitude == 0.0 && longitude == 0.0) {
+      return false;
+    }
+    
+    // Check if coordinates are within Malaysia bounds
+    // Malaysia bounds: approximately 0.85°N to 7.36°N, 99.64°E to 119.27°E
+    // Using slightly expanded bounds for safety: 0.0°N to 8.0°N, 99.0°E to 120.0°E
+    if (latitude < 0.0 || latitude > 8.0) {
+      return false;
+    }
+    if (longitude < 99.0 || longitude > 120.0) {
+      return false;
+    }
+    
+    return true;
+  }
+
+  /// Updates vehicle markers on the map based on current vehicle positions
+  /// 
+  /// This method uses a diff-patch algorithm to efficiently update markers:
+  /// - Adds new markers for vehicles not currently displayed
+  /// - Updates existing markers for vehicles that have moved
+  /// - Removes markers for vehicles that are no longer in the feed
+  /// 
+  /// The method filters vehicles by the selected operator and validates
+  /// coordinates before displaying them.
+  Future<void> _updateVehicleMarkers() async {
+    // Early return if manager is not initialized or widget is disposed
+    if (_circleAnnotationManager == null || _isDisposed || !mounted) {
+      return;
+    }
+    
+    try {
+      // Get current vehicle positions
+      final GtfsRealtimeState realtimeState = ref.read(gtfsRealtimeProvider);
+      final List<VehicleEntity> vehicles = realtimeState.vehicles;
+      
+      // Generate hash of vehicle positions to detect actual changes
+      // This prevents redundant updates when vehicle positions haven't changed
+      final String currentStateHash = vehicles
+          .map((VehicleEntity v) => '${v.id}:${v.latitude.toStringAsFixed(5)},${v.longitude.toStringAsFixed(5)}')
+          .join('|');
+      
+      if (currentStateHash == _lastVehicleStateHash) {
+        return; // No changes detected, skip update
+      }
+      _lastVehicleStateHash = currentStateHash;
+      
+      // Filter vehicles to only include those with valid coordinates
+      // This is a safety check - most invalid coordinates should already be filtered during parsing
+      // This prevents markers from being placed off-screen (e.g., at 0.0, 0.0)
+      final List<VehicleEntity> validVehicles = <VehicleEntity>[];
+      
+      for (final VehicleEntity vehicle in vehicles) {
+        if (_isValidCoordinate(vehicle.latitude, vehicle.longitude)) {
+          validVehicles.add(vehicle);
+        }
+      }
+      
+      // Note: Vehicles are already filtered by agency at the API level
+      // The API fetches vehicles for the selected agency, so we don't need
+      // to filter client-side. However, we keep this for safety and consistency.
+      // If selectedAgency is null, show all vehicles (though API will use default)
+      
+      // Get current zoom level for clustering
+      double zoomLevel = _currentZoomLevel;
+      try {
+        final CameraState cameraState = await mapboxMap!.getCameraState();
+        zoomLevel = cameraState.zoom;
+        _currentZoomLevel = zoomLevel; // Cache for next update
+      } catch (e) {
+        // Silently use cached zoom level if camera state unavailable
+      }
+      
+      // Apply clustering to reduce marker count at lower zoom levels
+      final List<VehicleCluster> clusters = VehicleClusteringService.clusterVehicles(
+        validVehicles,
+        zoomLevel,
+      );
+      
+      // Convert clusters back to vehicles for rendering
+      // For clustered markers, we use the first vehicle as representative
+      final List<VehicleEntity> filteredVehicles = clusters.map((VehicleCluster cluster) {
+        if (cluster.isCluster) {
+          // For clusters, create a representative vehicle at cluster center
+          // Use the first vehicle's data but with cluster center coordinates
+          final VehicleEntity representative = cluster.vehicle;
+          return VehicleEntity(
+            id: 'cluster_${cluster.vehicles.map((VehicleEntity v) => v.id).join('_')}',
+            routeId: representative.routeId,
+            tripId: representative.tripId,
+            latitude: cluster.centerLatitude,
+            longitude: cluster.centerLongitude,
+            bearing: representative.bearing,
+            speed: representative.speed,
+            timestamp: representative.timestamp,
+            operatorId: representative.operatorId,
+            vehicleLabel: '${cluster.count} vehicles', // Show count for clusters
+          );
+        }
+        return cluster.vehicle;
+      }).toList();
+      
+      // Create set of new vehicle IDs for efficient lookup
+      final Set<String> newVehicleIds = filteredVehicles
+          .map((VehicleEntity v) => v.id)
+          .toSet();
+      
+      // Find vehicles to remove (in current set but not in new set)
+      final Set<String> vehiclesToRemove = _currentAnnotations.keys
+          .toSet()
+          .difference(newVehicleIds);
+      
+      // Batch remove markers for vehicles no longer in the feed
+      if (vehiclesToRemove.isNotEmpty) {
+        // Delete all annotations in sequence (no async gaps for better performance)
+        for (final String vehicleId in vehiclesToRemove) {
+          final CircleAnnotation? annotation = _currentAnnotations[vehicleId];
+          if (annotation != null) {
+            _circleAnnotationManager!.delete(annotation); // Fire and forget for speed
+            _currentAnnotations.remove(vehicleId);
+          }
+        }
+      }
+      
+      // Find vehicles to add (in new set but not in current set)
+      final Set<String> vehiclesToAdd = newVehicleIds
+          .difference(_currentAnnotations.keys.toSet());
+      
+      // Find vehicles to update (in both sets, but position may have changed)
+      final Set<String> vehiclesToUpdate = _currentAnnotations.keys
+          .toSet()
+          .intersection(newVehicleIds);
+      
+      // Create annotations for new vehicles (optimized loop without excessive awaits)
+      if (vehiclesToAdd.isNotEmpty) {
+        final List<Future<void>> createFutures = <Future<void>>[];
+        
+        for (final VehicleEntity vehicle in filteredVehicles) {
+          if (vehiclesToAdd.contains(vehicle.id)) {
+            final CircleAnnotationOptions options = 
+                VehicleMarkerService.createAnnotationFromVehicle(vehicle);
+            
+            // Queue creation without awaiting immediately (parallel execution)
+            createFutures.add(
+              _circleAnnotationManager!.create(options).then((CircleAnnotation annotation) {
+                _currentAnnotations[vehicle.id] = annotation;
+              }).catchError((Object e) {
+                // Silently handle creation errors
+              })
+            );
+          }
+        }
+        
+        // Wait for all creates to complete in parallel
+        if (createFutures.isNotEmpty) {
+          await Future.wait(createFutures, eagerError: false);
+        }
+      }
+      
+      // Update annotations for existing vehicles (optimized parallel delete+create)
+      if (vehiclesToUpdate.isNotEmpty) {
+        final List<Future<void>> updateFutures = <Future<void>>[];
+        
+        for (final VehicleEntity vehicle in filteredVehicles) {
+          if (vehiclesToUpdate.contains(vehicle.id)) {
+            final CircleAnnotation? oldAnnotation = _currentAnnotations[vehicle.id];
+            if (oldAnnotation != null) {
+              final CircleAnnotationOptions options = 
+                  VehicleMarkerService.createAnnotationFromVehicle(vehicle);
+              
+              // Queue delete+create as single future (parallel execution)
+              updateFutures.add(
+                _circleAnnotationManager!.delete(oldAnnotation).then((_) {
+                  return _circleAnnotationManager!.create(options);
+                }).then((CircleAnnotation newAnnotation) {
+                  _currentAnnotations[vehicle.id] = newAnnotation;
+                }).catchError((Object e) {
+                  // Silently handle update errors
+                })
+              );
+            }
+          }
+        }
+        
+        // Wait for all updates to complete in parallel
+        if (updateFutures.isNotEmpty) {
+          await Future.wait(updateFutures, eagerError: false);
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error updating vehicle markers: $e');
+    }
+  }
+
+  /// Builds a loading state widget with a progress indicator
+  /// 
+  /// [message] - The message to display to the user while loading
+  /// 
+  /// Returns a centered loading widget with a progress indicator and message
+  Widget _buildLoadingState(String message) {
+    return Container(
+      color: const Color(0xFF1A1A1A),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 48,
+              height: 48,
+              child: CircularProgressIndicator(
+                color: Colors.blue,
+                strokeWidth: 3,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              message,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'This may take a few seconds',
+              style: TextStyle(
+                color: Colors.white60,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Builds a full-screen error state widget
+  /// 
+  /// [icon] - Icon to display for the error
+  /// [title] - Title text for the error
+  /// [message] - Detailed error message
+  /// [action] - Optional action widget (e.g., retry button)
+  /// 
+  /// Returns a centered error widget with icon, title, message, and optional action
+  Widget _buildErrorState({
+    required IconData icon,
+    required String title,
+    required String message,
+    required Widget? action,
+  }) {
+    return Container(
+      color: const Color(0xFF1A1A1A),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 80,
+                color: Colors.white30,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                message,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 15,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              if (action != null) ...[
+                const SizedBox(height: 32),
+                action,
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Builds an error overlay that appears on top of the map
+  /// 
+  /// This overlay displays when the map fails to load, showing
+  /// an error icon, message, and a retry button.
+  Widget _buildErrorOverlay() {
+    final MapWidgetState mapWidgetState = ref.read(mapWidgetStateProvider);
+    
+    return Container(
+      color: Colors.black.withOpacity(0.85),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.error_outline,
+                size: 64,
+                color: Colors.redAccent,
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Map Loading Failed',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                mapWidgetState.errorMessage ?? 'An error occurred while loading the map',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 32),
+              _buildRetryButton(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Builds a retry button for reattempting map connection
+  /// 
+  /// The button shows a loading indicator while retrying and
+  /// is disabled during the retry operation.
+  Widget _buildRetryButton() {
+    final MapWidgetState mapWidgetState = ref.read(mapWidgetStateProvider);
+    
+    return ElevatedButton.icon(
+      onPressed: mapWidgetState.isRetrying ? null : _retryConnection,
+      icon: mapWidgetState.isRetrying
+          ? const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          : const Icon(Icons.refresh),
+      label: Text(mapWidgetState.isRetrying ? 'Retrying...' : 'Try Again'),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
+  }
+
+  /// Builds a connectivity indicator that shows at the top when offline
+  /// 
+  /// [state] - The current connectivity state
+  /// 
+  /// Returns a positioned widget showing offline status, or an empty
+  /// widget if connected or if there's an error.
+  Widget _buildConnectivityIndicator(ConnectivityState state) {
+    final MapWidgetState mapWidgetState = ref.read(mapWidgetStateProvider);
+    
+    // Hide indicator if connected or if there's an error (error overlay handles that)
+    if (state.isConnected || mapWidgetState.hasError) {
+      return const SizedBox.shrink();
+    }
+
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        color: Colors.orange.withOpacity(0.9),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.wifi_off, size: 16, color: Colors.white),
+            const SizedBox(width: 8),
+            const Text(
+              'Offline',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Gets the shape entity for a vehicle by looking up its trip
+  /// 
+  /// [vehicle] - The vehicle entity to get the shape for
+  /// 
+  /// Returns: The ShapeEntity if found, or null if not found
+  /// This method caches trip lookups to improve performance.
+  Future<ShapeEntity?> _getShapeForVehicle(VehicleEntity vehicle) async {
+    try {
+      // Get trip from cache or repository
+      TripEntity? trip = _tripCache[vehicle.tripId];
+      if (trip == null) {
+        final gtfsStaticNotifier = ref.read(gtfsStaticProvider.notifier);
+        trip = await gtfsStaticNotifier.getTripById(vehicle.tripId);
+        _tripCache[vehicle.tripId] = trip;
+      }
+
+      if (trip?.shapeId == null) {
+        return null;
+      }
+
+      // Get shape from GTFS static provider
+      final gtfsStaticState = ref.read(gtfsStaticProvider);
+      return gtfsStaticState.shapes[trip!.shapeId];
+    } catch (e) {
+      debugPrint('❌ Error getting shape for vehicle ${vehicle.id}: $e');
+      return null;
+    }
+  }
+
+  /// Gets the route entity for a vehicle
+  /// 
+  /// [vehicle] - The vehicle entity to get the route for
+  /// 
+  /// Returns: The RouteEntity if found, or null if not found
+  /// This method caches route lookups to improve performance.
+  Future<RouteEntity?> _getRouteForVehicle(VehicleEntity vehicle) async {
+    try {
+      // Check cache first
+      RouteEntity? route = _routeCache[vehicle.routeId];
+      if (route != null) {
+        return route;
+      }
+
+      // Get route from GTFS static provider
+      final gtfsStaticState = ref.read(gtfsStaticProvider);
+      route = gtfsStaticState.routes.firstWhere(
+        (RouteEntity r) => r.id == vehicle.routeId,
+        orElse: () => throw Exception('Route not found'),
+      );
+
+      // Cache the route
+      _routeCache[vehicle.routeId] = route;
+      return route;
+    } catch (e) {
+      debugPrint('❌ Error getting route for vehicle ${vehicle.id}: $e');
+      return null;
+    }
+  }
+
+  /// Moves the map camera to center on a specific vehicle
+  /// 
+  /// [vehicle] - The vehicle entity to move the camera to
+  /// 
+  /// This method animates the camera to the vehicle's position with zoom level 15,
+  /// then triggers the vehicle selection handler to show route shape and bottom sheet.
+  Future<void> _moveCameraToVehicle(VehicleEntity vehicle) async {
+    if (mapboxMap == null || _isDisposed || !mounted) return;
+
+    try {
+      // Animate camera to vehicle position with zoom level 15
+      await mapboxMap!.setCamera(
+        CameraOptions(
+          center: Point(coordinates: Position(vehicle.longitude, vehicle.latitude)),
+          zoom: 15.0,
+          bearing: null, // Keep current bearing
+          pitch: null,   // Keep current pitch
+        ),
+      );
+      
+      debugPrint('✅ Camera moved to vehicle ${vehicle.id}');
+      
+      // Handle vehicle selection (show sheet and highlight route)
+      await _handleVehicleSelection(vehicle);
+      
+      // Clear the camera target in the provider after successful movement
+      ref.read(mapCameraProvider.notifier).clearTarget();
+    } catch (e) {
+      debugPrint('❌ Error moving camera to vehicle: $e');
+      // Clear target even on error to allow retry
+      ref.read(mapCameraProvider.notifier).clearTarget();
+    }
+  }
+
+  /// Handles vehicle selection and displays vehicle information
+  /// 
+  /// [vehicle] - The vehicle entity that was selected
+  /// 
+  /// When a vehicle is selected (from list or camera movement), this method:
+  /// 1. Shows vehicle information in a bottom sheet
+  /// 2. Gets the vehicle's trip and shape
+  /// 3. Gets the route color
+  /// 4. Highlights the route on the map
+  /// 
+  /// This method is called when a vehicle is selected from the vehicle list panel,
+  /// which triggers camera movement via the mapCameraProvider.
+  Future<void> _handleVehicleSelection(VehicleEntity vehicle) async {
+    if (mapboxMap == null || _isDisposed || !mounted) return;
+
+    try {
+
+      // Show vehicle information sheet
+      // Using very light barrier color to keep map visible behind the sheet
+      // useSafeArea ensures proper display on devices with notches/home indicators
+      // showDragHandle provides visual feedback for draggable sheet
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withOpacity(0.15), // Light barrier to keep map visible
+        isDismissible: true, // Allow dismissing by tapping outside
+        enableDrag: true, // Allow dragging to dismiss
+        useSafeArea: true, // Respect device safe areas (notches, home indicators)
+        showDragHandle: true, // Show visual drag handle indicator
+        builder: (BuildContext sheetContext) {
+          return VehicleInfoSheet(
+            vehicle: vehicle,
+            onDismissed: () {
+              // Optionally handle dismissal
+            },
+          );
+        },
+      );
+
+      // Get shape for vehicle
+      final ShapeEntity? shape = await _getShapeForVehicle(vehicle);
+      if (shape != null) {
+        // Get route for vehicle to get route color
+        final RouteEntity? route = await _getRouteForVehicle(vehicle);
+        final String? routeColor = route?.color;
+
+        // Highlight the route
+        ref.read(routeHighlightProvider.notifier).highlightRoute(
+          vehicle.id,
+          shape.id,
+          routeColor,
+        );
+
+        debugPrint('✅ Highlighted route for vehicle ${vehicle.id}');
+      }
+
+      debugPrint('✅ Showed vehicle info for ${vehicle.id}');
+    } catch (e) {
+      debugPrint('❌ Error handling vehicle click: $e');
+    }
+  }
+
+  /// Updates the route highlight on the map based on the highlight state
+  /// 
+  /// [highlightState] - The current route highlight state
+  /// 
+  /// This method draws or removes the route polyline based on the highlight state.
+  Future<void> _updateRouteHighlight(RouteHighlightState highlightState) async {
+    if (_polylineAnnotationManager == null || mapboxMap == null || _isDisposed) {
+      return;
+    }
+
+    try {
+      // Clear previous highlight if exists
+      if (_currentRouteHighlight != null) {
+        await RouteShapeService.clearRouteShape(
+          _polylineAnnotationManager!,
+          _currentRouteHighlight!,
+        );
+        _currentRouteHighlight = null;
+      }
+
+      // Draw new highlight if one is specified
+      if (highlightState.isHighlighted && highlightState.highlightedShapeId != null) {
+        final GtfsStaticState gtfsStaticState = ref.read(gtfsStaticProvider);
+        final ShapeEntity? shape = gtfsStaticState.shapes[highlightState.highlightedShapeId!];
+        
+        if (shape == null) {
+          debugPrint('⚠️ Shape not found for highlight: ${highlightState.highlightedShapeId}');
+          return;
+        }
+
+        _currentRouteHighlight = await RouteShapeService.drawRouteShape(
+          mapboxMap!,
+          _polylineAnnotationManager!,
+          shape,
+          highlightState.highlightedRouteColor,
+        );
+
+        if (_currentRouteHighlight != null) {
+          debugPrint('✅ Route highlight drawn for shape ${shape.id}');
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error updating route highlight: $e');
+    }
+  }
+
+  // PERFORMANCE OPTIMIZATION: Animation methods disabled to eliminate 400-1000 async operations every 100ms
+  // These methods were causing severe lag with 200-500 vehicles due to constant delete/recreate of all markers
+  // Future enhancement: Implement selected-vehicle-only animation
+  
+  /* DISABLED FOR PERFORMANCE
+  /// Starts the animation timer for smooth vehicle movement
+  /// 
+  /// The timer runs at 0.1 second intervals (10 Hz) to animate vehicles
+  /// smoothly along their route shapes between position updates.
+  void _startAnimationTimer() {
+    _animationTimer?.cancel();
+    _animationTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (_isDisposed || !mounted || mapboxMap == null) {
+        timer.cancel();
+        return;
+      }
+      _animateVehicles();
+    });
+  }
+
+  /// Animates vehicles smoothly along their route shapes
+  /// 
+  /// This method is called by the animation timer at 0.1 second intervals.
+  /// It interpolates vehicle positions along their route shapes for smooth movement.
+  Future<void> _animateVehicles() async {
+    if (_circleAnnotationManager == null || _isDisposed || !mounted) {
+      return;
+    }
+
+    try {
+      final GtfsRealtimeState realtimeState = ref.read(gtfsRealtimeProvider);
+      final List<VehicleEntity> vehicles = realtimeState.vehicles;
+
+      for (final VehicleEntity vehicle in vehicles) {
+        // Skip if vehicle doesn't have an annotation
+        if (!_currentAnnotations.containsKey(vehicle.id)) {
+          continue;
+        }
+
+        // Get shape for vehicle
+        final ShapeEntity? shape = await _getShapeForVehicle(vehicle);
+        if (shape == null || shape.points.isEmpty) {
+          continue;
+        }
+
+        // Get or create animation state
+        _VehicleAnimationState? animState = _vehicleAnimationStates[vehicle.id];
+        final DateTime now = DateTime.now();
+
+        // Update animation state if vehicle position changed
+        if (animState == null || 
+            animState.lastVehicle.latitude != vehicle.latitude ||
+            animState.lastVehicle.longitude != vehicle.longitude) {
+          // Calculate interpolation factor based on vehicle position relative to shape
+          final double interpolationFactor = _calculateInterpolationFactor(
+            vehicle,
+            shape,
+          );
+
+          animState = _VehicleAnimationState(
+            lastVehicle: vehicle,
+            lastUpdateTime: now,
+            lastInterpolationFactor: interpolationFactor,
+          );
+          _vehicleAnimationStates[vehicle.id] = animState;
+        } else {
+          // Update timestamp for existing state
+          animState = _VehicleAnimationState(
+            lastVehicle: animState.lastVehicle,
+            lastUpdateTime: now,
+            lastInterpolationFactor: animState.lastInterpolationFactor,
+          );
+          _vehicleAnimationStates[vehicle.id] = animState;
+        }
+
+        // Interpolate position along shape
+        if (animState.lastInterpolationFactor != null) {
+          final VehicleEntity interpolatedVehicle = _interpolationUseCase.interpolate(
+            vehicle: vehicle,
+            shape: shape,
+            interpolationFactor: animState.lastInterpolationFactor!,
+          );
+
+          // Update marker position
+          final CircleAnnotation? annotation = _currentAnnotations[vehicle.id];
+          if (annotation != null) {
+            try {
+              // Delete and recreate annotation with new position
+              await _circleAnnotationManager!.delete(annotation);
+              final CircleAnnotationOptions options = 
+                  VehicleMarkerService.createAnnotationFromVehicle(interpolatedVehicle);
+              final CircleAnnotation newAnnotation = 
+                  await _circleAnnotationManager!.create(options);
+              _currentAnnotations[vehicle.id] = newAnnotation;
+            } catch (e) {
+              debugPrint('❌ Error updating vehicle ${vehicle.id} position: $e');
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error animating vehicles: $e');
+    }
+  }
+  */
+
+  // PERFORMANCE: Interpolation methods disabled - animation removed
+  /* DISABLED
+  double _calculateInterpolationFactor(VehicleEntity vehicle, ShapeEntity shape) {
+    if (shape.points.isEmpty) {
+      return 0.0;
+    }
+    double minDistance = double.infinity;
+    int nearestIndex = 0;
+    for (int i = 0; i < shape.points.length; i++) {
+      final point = shape.points[i];
+      final distance = _calculateDistance(
+        vehicle.latitude,
+        vehicle.longitude,
+        point.latitude,
+        point.longitude,
+      );
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestIndex = i;
+      }
+    }
+    return nearestIndex / shape.points.length;
+  }
+  */
+
+  /// Starts the vehicle interpolation system
+  /// 
+  /// Initializes the interpolation provider and starts periodic viewport updates.
+  /// This enables smooth vehicle movement between realtime updates.
+  void _startInterpolationSystem() {
+    if (_isDisposed || !mounted) return;
+    
+    debugPrint('🎬 Starting vehicle interpolation system');
+    
+    // Start the interpolation provider
+    ref.read(vehicleInterpolationProvider.notifier).start();
+    
+    // Update viewport bounds immediately
+    _updateViewportBounds();
+    
+    // Start periodic viewport updates
+    _startViewportUpdateTimer();
+    
+    // Note: Interpolation state changes are now watched in the build method
+    // to comply with Riverpod's requirement that ref.listen must be called
+    // within the build method of a ConsumerWidget
+  }
+  
+  /// Starts the viewport update timer
+  /// 
+  /// Periodically checks if the camera has moved significantly and updates
+  /// the viewport bounds in the interpolation provider if needed.
+  void _startViewportUpdateTimer() {
+    _viewportUpdateTimer?.cancel();
+    
+    _viewportUpdateTimer = Timer.periodic(
+      const Duration(milliseconds: 500), // Check every 500ms
+      (_) {
+        if (_isDisposed || !mounted || mapboxMap == null) return;
+        _checkAndUpdateViewport();
+      },
+    );
+  }
+  
+  /// Checks if camera has moved significantly and updates viewport if needed
+  Future<void> _checkAndUpdateViewport() async {
+    if (mapboxMap == null) return;
+    
+    try {
+      final CameraState cameraState = await mapboxMap!.getCameraState();
+      final Point centerPoint = cameraState.center;
+      final Position currentCenter = centerPoint.coordinates;
+      
+      // Check if camera moved significantly
+      bool shouldUpdate = false;
+      if (_lastCameraCenter == null) {
+        shouldUpdate = true;
+      } else {
+        final double latDiff = (currentCenter.lat.toDouble() - _lastCameraCenter!.lat.toDouble()).abs();
+        final double lonDiff = (currentCenter.lng.toDouble() - _lastCameraCenter!.lng.toDouble()).abs();
+        
+        if (latDiff > _cameraMovementThreshold || lonDiff > _cameraMovementThreshold) {
+          shouldUpdate = true;
+        }
+      }
+      
+      if (shouldUpdate) {
+        _lastCameraCenter = currentCenter;
+        await _updateViewportBounds();
+      }
+    } catch (e) {
+      // Silently handle errors
+    }
+  }
+  
+  /// Updates the viewport bounds in the interpolation provider
+  /// 
+  /// Calculates the visible map bounds based on current camera position
+  /// and notifies the interpolation provider for filtering visible vehicles.
+  Future<void> _updateViewportBounds() async {
+    if (mapboxMap == null || _isDisposed || !mounted) return;
+    
+    try {
+      final CameraState cameraState = await mapboxMap!.getCameraState();
+      final Point centerPoint = cameraState.center;
+      final Position center = centerPoint.coordinates;
+      final double zoom = cameraState.zoom.toDouble();
+      
+      // Calculate approximate viewport bounds based on zoom level
+      // These are rough approximations - more accurate bounds would require
+      // screen dimensions and projection calculations
+      final double latRange = _calculateLatRangeForZoom(zoom);
+      final double lonRange = _calculateLonRangeForZoom(zoom);
+      
+      final double minLat = center.lat - latRange / 2;
+      final double maxLat = center.lat + latRange / 2;
+      final double minLon = center.lng - lonRange / 2;
+      final double maxLon = center.lng + lonRange / 2;
+      
+      // Update interpolation provider with new bounds
+      ref.read(vehicleInterpolationProvider.notifier).updateViewportBounds(
+        minLat: minLat,
+        maxLat: maxLat,
+        minLon: minLon,
+        maxLon: maxLon,
+      );
+    } catch (e) {
+      debugPrint('❌ Error updating viewport bounds: $e');
+    }
+  }
+  
+  /// Calculates approximate latitude range visible at a given zoom level
+  /// 
+  /// This is a rough approximation. More accurate calculations would require
+  /// screen dimensions and proper map projection formulas.
+  double _calculateLatRangeForZoom(double zoom) {
+    // Approximate degrees of latitude visible
+    // At zoom 0, ~180 degrees visible
+    // Each zoom level halves the visible area
+    return 180.0 / (1 << zoom.floor());
+  }
+  
+  /// Calculates approximate longitude range visible at a given zoom level
+  double _calculateLonRangeForZoom(double zoom) {
+    // Approximate degrees of longitude visible
+    // At zoom 0, ~360 degrees visible
+    // Each zoom level halves the visible area
+    return 360.0 / (1 << zoom.floor());
+  }
+  
+  /// Updates markers with interpolated vehicle positions
+  /// 
+  /// This method is called whenever the interpolation state changes.
+  /// It updates only the markers for visible vehicles that have been interpolated.
+  Future<void> _updateInterpolatedMarkers(InterpolationGlobalState interpolationState) async {
+    if (_circleAnnotationManager == null || _isDisposed || !mounted) {
+      return;
+    }
+    
+    try {
+      // Get visible interpolated vehicles
+      final List<VehicleEntity> visibleVehicles = 
+          ref.read(vehicleInterpolationProvider.notifier).getVisibleInterpolatedVehicles();
+      
+      if (visibleVehicles.isEmpty) {
+        return;
+      }
+      
+      // Update markers for interpolated vehicles
+      final List<Future<void>> updateFutures = <Future<void>>[];
+      
+      for (final VehicleEntity vehicle in visibleVehicles) {
+        final CircleAnnotation? annotation = _currentAnnotations[vehicle.id];
+        if (annotation != null) {
+          // Create new annotation options with updated position
+          final CircleAnnotationOptions options = 
+              VehicleMarkerService.createAnnotationFromVehicle(vehicle);
+          
+          // Queue update (delete + recreate)
+          updateFutures.add(
+            _circleAnnotationManager!.delete(annotation).then((_) {
+              return _circleAnnotationManager!.create(options);
+            }).then((CircleAnnotation newAnnotation) {
+              _currentAnnotations[vehicle.id] = newAnnotation;
+            }).catchError((Object e) {
+              // Silently handle errors
+            })
+          );
+        }
+      }
+      
+      // Wait for all updates to complete in parallel
+      if (updateFutures.isNotEmpty) {
+        await Future.wait(updateFutures, eagerError: false);
+      }
+    } catch (e) {
+      // Silently handle errors to avoid disrupting the interpolation loop
+    }
+  }
+
+  @override
+  void dispose() {
+    // Mark as disposed to prevent any further state updates
+    _isDisposed = true;
+    
+    // Stop interpolation system
+    try {
+      ref.read(vehicleInterpolationProvider.notifier).stop();
+    } catch (e) {
+      debugPrint('Error stopping interpolation: $e');
+    }
+    
+    // Cancel timers
+    _markerUpdateTimer?.cancel();
+    _markerUpdateTimer = null;
+    _viewportUpdateTimer?.cancel();
+    _viewportUpdateTimer = null;
+    
+    // Clean up annotation managers
+    // The managers will be automatically disposed when the map is disposed,
+    // but we clear the references here for clarity
+    try {
+      _circleAnnotationManager = null;
+      _polylineAnnotationManager = null;
+      _currentAnnotations.clear();
+      _tripCache.clear();
+      _routeCache.clear();
+      _currentRouteHighlight = null;
+    } catch (e) {
+      debugPrint('Error disposing annotation managers: $e');
+    }
+    
+    // MapWidget handles the MapboxMap disposal automatically
+    // We only clear the reference here to help with garbage collection
+    try {
+      if (mapboxMap != null) {
+        mapboxMap = null;
+      }
+    } catch (e) {
+      debugPrint('Error disposing mapboxMap: $e');
+    }
+    super.dispose();
+  }
+}
