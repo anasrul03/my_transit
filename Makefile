@@ -105,18 +105,52 @@ run-dev: get ## Run the app in development mode (with hot reload)
 
 run-release: get ## Run the app in release mode
 	@echo "$(BLUE)Running app in release mode...$(NC)"
-	@if [ -z "$(DEVICE_ID)" ]; then \
-		$(FLUTTER) run --release; \
+	@# Load environment variables from .env file
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	if [ -z "$(DEVICE_ID)" ]; then \
+		$(FLUTTER) run --release $$DART_DEFINES; \
 	else \
-		$(FLUTTER) run --release -d $(DEVICE_ID); \
+		$(FLUTTER) run --release $$DART_DEFINES -d $(DEVICE_ID); \
 	fi
 
 run-profile: get ## Run the app in profile mode
 	@echo "$(BLUE)Running app in profile mode...$(NC)"
-	@if [ -z "$(DEVICE_ID)" ]; then \
-		$(FLUTTER) run --profile; \
+	@# Load environment variables from .env file
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	if [ -z "$(DEVICE_ID)" ]; then \
+		$(FLUTTER) run --profile $$DART_DEFINES; \
 	else \
-		$(FLUTTER) run --profile -d $(DEVICE_ID); \
+		$(FLUTTER) run --profile $$DART_DEFINES -d $(DEVICE_ID); \
 	fi
 
 devices: ## List connected devices
@@ -126,22 +160,106 @@ devices: ## List connected devices
 # Build commands
 build-apk: get ## Build debug APK
 	@echo "$(BLUE)Building debug APK...$(NC)"
-	$(FLUTTER) build apk --debug
+	@# Load environment variables from .env file
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	$(FLUTTER) build apk --debug $$DART_DEFINES
 	@echo "$(GREEN)Debug APK built at: build/app/outputs/flutter-apk/app-debug.apk$(NC)"
 
 build-apk-release: get ## Build release APK
 	@echo "$(BLUE)Building release APK...$(NC)"
-	$(FLUTTER) build apk --release
+	@# Load environment variables from .env file
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env file...$(NC)"; \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
+	fi; \
+	if [ -z "$$ACCESS_TOKEN" ]; then \
+		echo "$(YELLOW)Warning: ACCESS_TOKEN not set. Mapbox features will not work.$(NC)"; \
+	else \
+		echo "$(GREEN)ACCESS_TOKEN found$(NC)"; \
+	fi; \
+	if [ -z "$$SUPABASE_URL" ]; then \
+		echo "$(YELLOW)Warning: SUPABASE_URL not set. Supabase features will not work.$(NC)"; \
+	else \
+		echo "$(GREEN)SUPABASE_URL found$(NC)"; \
+	fi; \
+	if [ -z "$$SUPABASE_ANON_KEY" ]; then \
+		echo "$(YELLOW)Warning: SUPABASE_ANON_KEY not set. Supabase features will not work.$(NC)"; \
+	else \
+		echo "$(GREEN)SUPABASE_ANON_KEY found$(NC)"; \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	$(FLUTTER) build apk --release $$DART_DEFINES
 	@echo "$(GREEN)Release APK built at: build/app/outputs/flutter-apk/app-release.apk$(NC)"
 
 build-apk-split: get ## Build release APK (split by ABI)
 	@echo "$(BLUE)Building release APK (split by ABI)...$(NC)"
-	$(FLUTTER) build apk --release --split-per-abi
+	@# Load environment variables from .env file
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	$(FLUTTER) build apk --release --split-per-abi $$DART_DEFINES
 	@echo "$(GREEN)Split APKs built at: build/app/outputs/flutter-apk/$(NC)"
 
 build-appbundle: get ## Build Android App Bundle (AAB)
 	@echo "$(BLUE)Building Android App Bundle...$(NC)"
-	$(FLUTTER) build appbundle --release
+	@# Load environment variables from .env file
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	$(FLUTTER) build appbundle --release $$DART_DEFINES
 	@echo "$(GREEN)App Bundle built at: build/app/outputs/bundle/release/app-release.aab$(NC)"
 
 # Installation commands
