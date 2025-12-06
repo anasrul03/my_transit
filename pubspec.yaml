@@ -138,3 +138,7 @@ flutter_launcher_icons:
   image_path: "ioi.svg"
   adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "ioi.svg"
+  # Prevent stretching by centering the logo
+  adaptive_icon_padding: 20
+  # Remove alpha channel for iOS App Store compliance
+  remove_alpha_ios: true
