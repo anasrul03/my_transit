@@ -1,6 +1,4 @@
 import 'dart:async';
-// PERFORMANCE: Math import removed - animation calculations disabled
-// import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
@@ -11,14 +9,14 @@ import '../../../domain/entities/vehicle_entity.dart';
 import '../../../domain/entities/shape_entity.dart';
 import '../../../domain/entities/trip_entity.dart';
 import '../../../domain/entities/route_entity.dart';
-// PERFORMANCE: Interpolation removed for optimization
-// import '../../../domain/usecases/interpolate_vehicle_position.dart';
 import '../../providers/connectivity_provider.dart';
 import '../../providers/gtfs_realtime_provider.dart';
 import '../../providers/gtfs_static_provider.dart';
+import '../../providers/map_camera_provider.dart';
 import '../../providers/map_filters_provider.dart';
 import '../../providers/map_widget_provider.dart';
 import '../../providers/route_highlight_provider.dart';
+import '../../providers/vehicle_interpolation_provider.dart';
 import 'operator_selection_button.dart';
 import 'vehicle_info_sheet.dart';
 import 'vehicle_list_panel.dart';
@@ -112,6 +110,21 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
   /// Used to determine clustering behavior - vehicles are clustered more
   /// aggressively at lower zoom levels and shown individually at higher zoom.
   double _currentZoomLevel = 12.0;
+  
+  /// Timer for updating viewport bounds periodically
+  /// 
+  /// Updates the viewport bounds in the interpolation provider when the
+  /// camera position changes significantly.
+  Timer? _viewportUpdateTimer;
+  
+  /// Last known camera center for detecting significant camera movements
+  Position? _lastCameraCenter;
+  
+  /// Threshold for camera movement to trigger viewport update (degrees)
+  /// 
+  /// Only update viewport if camera moved more than this distance to avoid
+  /// excessive updates during small adjustments.
+  static const double _cameraMovementThreshold = 0.01;
 
   @override
   void initState() {
@@ -235,12 +248,11 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
           .createPolylineAnnotationManager();
       debugPrint('✅ PolylineAnnotationManager created successfully');
       
-      // Set up annotation click listener for vehicle marker clicks
-      // Note: We'll implement click handling through map gesture detection
-      // The click handler method is ready but needs to be wired up based on Mapbox API version
+      // Note: Map tap detection removed - vehicles are selected from the list panel
+      // Vehicle selection triggers camera movement and route highlighting via provider
       
-      // Animation timer disabled for performance - only animate selected vehicles if needed
-      // _startAnimationTimer(); // DISABLED: causes 400-1000 async ops every 100ms with 200-500 vehicles
+      // Start vehicle interpolation system
+      _startInterpolationSystem();
       
       // Update markers with current vehicles if available
       // Use debounced update to prevent conflicts with listener-based updates
@@ -275,6 +287,7 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     }
   }
 
+
   /// Retries the map connection after an error
   /// 
   /// This method resets the error state, checks connectivity again,
@@ -307,6 +320,44 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     final RouteHighlightState highlightState = ref.watch(routeHighlightProvider);
     final GtfsRealtimeState realtimeState = ref.watch(gtfsRealtimeProvider); // Watch for vehicle updates
     final MapFiltersState filtersState = ref.watch(mapFiltersProvider); // Watch for filter changes
+    
+    // Listen to interpolation state changes to update markers with interpolated positions
+    // This must be in build method to comply with Riverpod requirements
+    // Use post-frame callback to avoid modifying provider state during build
+    ref.listen<InterpolationGlobalState>(
+      vehicleInterpolationProvider,
+      (InterpolationGlobalState? previous, InterpolationGlobalState current) {
+        if (mapWidgetState.mapCreated && !_isDisposed && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!_isDisposed && mounted) {
+              _updateInterpolatedMarkers(current);
+            }
+          });
+        }
+      },
+    );
+    
+    // Listen to camera control requests from vehicle list
+    // This allows the vehicle list to trigger camera movements and vehicle selection
+    ref.listen<MapCameraState>(
+      mapCameraProvider,
+      (MapCameraState? previous, MapCameraState current) {
+        if (mapWidgetState.mapCreated && 
+            !_isDisposed && 
+            mounted && 
+            current.targetVehicle != null &&
+            current.requestTime != null) {
+          // Check if this is a new request (different timestamp)
+          if (previous?.requestTime != current.requestTime) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!_isDisposed && mounted) {
+                _moveCameraToVehicle(current.targetVehicle!);
+              }
+            });
+          }
+        }
+      },
+    );
     
     // Check if vehicle data or filters changed and schedule marker update
     // This is more efficient than post-frame callbacks on every rebuild
@@ -379,7 +430,9 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     // Once map is created, we keep it stable to prevent unnecessary rebuilds
     return Stack(
       children: [
-        // Map Widget - stable key prevents rebuilds
+        // Map Widget with native Mapbox tap detection
+        // Tap detection is handled by CircleAnnotationManager's click listener
+        // which is more reliable than GestureDetector and doesn't conflict with map gestures
         MapWidget(
           key: const ValueKey("mapWidget_stable"),
           cameraOptions: CameraOptions(
@@ -388,7 +441,7 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
             bearing: 0.0,
             pitch: 0.0,
           ),
-          styleUri: 'mapbox://styles/mapbox/streets-v12',
+          styleUri: MapboxService.darkStyleUrl, // Dark theme for better visibility
           textureView: true,
           onMapCreated: _onMapCreated,
           onStyleLoadedListener: _onStyleLoadedListener,
@@ -955,48 +1008,70 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     }
   }
 
-  /// Handles click events on vehicle markers
+  /// Moves the map camera to center on a specific vehicle
   /// 
-  /// [annotation] - The circle annotation that was clicked
+  /// [vehicle] - The vehicle entity to move the camera to
   /// 
-  /// When a vehicle marker is clicked, this method:
-  /// 1. Finds the vehicle associated with the clicked annotation
-  /// 2. Shows vehicle information in a bottom sheet
-  /// 3. Gets the vehicle's trip and shape
-  /// 4. Gets the route color
-  /// 5. Highlights the route on the map
-  /// 
-  /// Note: This method is ready but needs to be wired up to the Mapbox click event handler
-  /// based on the specific Mapbox Maps Flutter API version being used.
-  // ignore: unused_element
-  Future<void> _handleVehicleClick(CircleAnnotation annotation) async {
+  /// This method animates the camera to the vehicle's position with zoom level 15,
+  /// then triggers the vehicle selection handler to show route shape and bottom sheet.
+  Future<void> _moveCameraToVehicle(VehicleEntity vehicle) async {
     if (mapboxMap == null || _isDisposed || !mounted) return;
 
     try {
-      // Find the vehicle associated with this annotation
-      final String? vehicleId = _findVehicleIdForAnnotation(annotation);
-      if (vehicleId == null) {
-        debugPrint('⚠️ Could not find vehicle for clicked annotation');
-        return;
-      }
-
-      // Get vehicle from realtime provider
-      final GtfsRealtimeState realtimeState = ref.read(gtfsRealtimeProvider);
-      final VehicleEntity? vehicle = realtimeState.vehicles.firstWhere(
-        (VehicleEntity v) => v.id == vehicleId,
-        orElse: () => throw Exception('Vehicle not found'),
+      // Animate camera to vehicle position with zoom level 15
+      await mapboxMap!.setCamera(
+        CameraOptions(
+          center: Point(coordinates: Position(vehicle.longitude, vehicle.latitude)),
+          zoom: 15.0,
+          bearing: null, // Keep current bearing
+          pitch: null,   // Keep current pitch
+        ),
       );
+      
+      debugPrint('✅ Camera moved to vehicle ${vehicle.id}');
+      
+      // Handle vehicle selection (show sheet and highlight route)
+      await _handleVehicleSelection(vehicle);
+      
+      // Clear the camera target in the provider after successful movement
+      ref.read(mapCameraProvider.notifier).clearTarget();
+    } catch (e) {
+      debugPrint('❌ Error moving camera to vehicle: $e');
+      // Clear target even on error to allow retry
+      ref.read(mapCameraProvider.notifier).clearTarget();
+    }
+  }
 
-      if (vehicle == null) {
-        debugPrint('⚠️ Vehicle not found for ID: $vehicleId');
-        return;
-      }
+  /// Handles vehicle selection and displays vehicle information
+  /// 
+  /// [vehicle] - The vehicle entity that was selected
+  /// 
+  /// When a vehicle is selected (from list or camera movement), this method:
+  /// 1. Shows vehicle information in a bottom sheet
+  /// 2. Gets the vehicle's trip and shape
+  /// 3. Gets the route color
+  /// 4. Highlights the route on the map
+  /// 
+  /// This method is called when a vehicle is selected from the vehicle list panel,
+  /// which triggers camera movement via the mapCameraProvider.
+  Future<void> _handleVehicleSelection(VehicleEntity vehicle) async {
+    if (mapboxMap == null || _isDisposed || !mounted) return;
+
+    try {
 
       // Show vehicle information sheet
+      // Using very light barrier color to keep map visible behind the sheet
+      // useSafeArea ensures proper display on devices with notches/home indicators
+      // showDragHandle provides visual feedback for draggable sheet
       showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withOpacity(0.15), // Light barrier to keep map visible
+        isDismissible: true, // Allow dismissing by tapping outside
+        enableDrag: true, // Allow dragging to dismiss
+        useSafeArea: true, // Respect device safe areas (notches, home indicators)
+        showDragHandle: true, // Show visual drag handle indicator
         builder: (BuildContext sheetContext) {
           return VehicleInfoSheet(
             vehicle: vehicle,
@@ -1028,20 +1103,6 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     } catch (e) {
       debugPrint('❌ Error handling vehicle click: $e');
     }
-  }
-
-  /// Finds the vehicle ID associated with a circle annotation
-  /// 
-  /// [annotation] - The circle annotation to find the vehicle for
-  /// 
-  /// Returns: The vehicle ID if found, or null if not found
-  String? _findVehicleIdForAnnotation(CircleAnnotation annotation) {
-    for (final entry in _currentAnnotations.entries) {
-      if (entry.value.id == annotation.id) {
-        return entry.key;
-      }
-    }
-    return null;
   }
 
   /// Updates the route highlight on the map based on the highlight state
@@ -1221,37 +1282,198 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
   }
   */
 
-  // PERFORMANCE: Distance calculation methods disabled - animation removed
-  /* DISABLED
-  double _calculateDistance(
-    double lat1,
-    double lon1,
-    double lat2,
-    double lon2,
-  ) {
-    const double earthRadius = 6371000;
-    final double dLat = _toRadians(lat2 - lat1);
-    final double dLon = _toRadians(lon2 - lon1);
-    final double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(_toRadians(lat1)) *
-            math.cos(_toRadians(lat2)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
-    return earthRadius * c;
+  /// Starts the vehicle interpolation system
+  /// 
+  /// Initializes the interpolation provider and starts periodic viewport updates.
+  /// This enables smooth vehicle movement between realtime updates.
+  void _startInterpolationSystem() {
+    if (_isDisposed || !mounted) return;
+    
+    debugPrint('🎬 Starting vehicle interpolation system');
+    
+    // Start the interpolation provider
+    ref.read(vehicleInterpolationProvider.notifier).start();
+    
+    // Update viewport bounds immediately
+    _updateViewportBounds();
+    
+    // Start periodic viewport updates
+    _startViewportUpdateTimer();
+    
+    // Note: Interpolation state changes are now watched in the build method
+    // to comply with Riverpod's requirement that ref.listen must be called
+    // within the build method of a ConsumerWidget
   }
-
-  double _toRadians(double degrees) => degrees * 3.141592653589793 / 180;
-  */
+  
+  /// Starts the viewport update timer
+  /// 
+  /// Periodically checks if the camera has moved significantly and updates
+  /// the viewport bounds in the interpolation provider if needed.
+  void _startViewportUpdateTimer() {
+    _viewportUpdateTimer?.cancel();
+    
+    _viewportUpdateTimer = Timer.periodic(
+      const Duration(milliseconds: 500), // Check every 500ms
+      (_) {
+        if (_isDisposed || !mounted || mapboxMap == null) return;
+        _checkAndUpdateViewport();
+      },
+    );
+  }
+  
+  /// Checks if camera has moved significantly and updates viewport if needed
+  Future<void> _checkAndUpdateViewport() async {
+    if (mapboxMap == null) return;
+    
+    try {
+      final CameraState cameraState = await mapboxMap!.getCameraState();
+      final Point centerPoint = cameraState.center;
+      final Position currentCenter = centerPoint.coordinates;
+      
+      // Check if camera moved significantly
+      bool shouldUpdate = false;
+      if (_lastCameraCenter == null) {
+        shouldUpdate = true;
+      } else {
+        final double latDiff = (currentCenter.lat.toDouble() - _lastCameraCenter!.lat.toDouble()).abs();
+        final double lonDiff = (currentCenter.lng.toDouble() - _lastCameraCenter!.lng.toDouble()).abs();
+        
+        if (latDiff > _cameraMovementThreshold || lonDiff > _cameraMovementThreshold) {
+          shouldUpdate = true;
+        }
+      }
+      
+      if (shouldUpdate) {
+        _lastCameraCenter = currentCenter;
+        await _updateViewportBounds();
+      }
+    } catch (e) {
+      // Silently handle errors
+    }
+  }
+  
+  /// Updates the viewport bounds in the interpolation provider
+  /// 
+  /// Calculates the visible map bounds based on current camera position
+  /// and notifies the interpolation provider for filtering visible vehicles.
+  Future<void> _updateViewportBounds() async {
+    if (mapboxMap == null || _isDisposed || !mounted) return;
+    
+    try {
+      final CameraState cameraState = await mapboxMap!.getCameraState();
+      final Point centerPoint = cameraState.center;
+      final Position center = centerPoint.coordinates;
+      final double zoom = cameraState.zoom.toDouble();
+      
+      // Calculate approximate viewport bounds based on zoom level
+      // These are rough approximations - more accurate bounds would require
+      // screen dimensions and projection calculations
+      final double latRange = _calculateLatRangeForZoom(zoom);
+      final double lonRange = _calculateLonRangeForZoom(zoom);
+      
+      final double minLat = center.lat - latRange / 2;
+      final double maxLat = center.lat + latRange / 2;
+      final double minLon = center.lng - lonRange / 2;
+      final double maxLon = center.lng + lonRange / 2;
+      
+      // Update interpolation provider with new bounds
+      ref.read(vehicleInterpolationProvider.notifier).updateViewportBounds(
+        minLat: minLat,
+        maxLat: maxLat,
+        minLon: minLon,
+        maxLon: maxLon,
+      );
+    } catch (e) {
+      debugPrint('❌ Error updating viewport bounds: $e');
+    }
+  }
+  
+  /// Calculates approximate latitude range visible at a given zoom level
+  /// 
+  /// This is a rough approximation. More accurate calculations would require
+  /// screen dimensions and proper map projection formulas.
+  double _calculateLatRangeForZoom(double zoom) {
+    // Approximate degrees of latitude visible
+    // At zoom 0, ~180 degrees visible
+    // Each zoom level halves the visible area
+    return 180.0 / (1 << zoom.floor());
+  }
+  
+  /// Calculates approximate longitude range visible at a given zoom level
+  double _calculateLonRangeForZoom(double zoom) {
+    // Approximate degrees of longitude visible
+    // At zoom 0, ~360 degrees visible
+    // Each zoom level halves the visible area
+    return 360.0 / (1 << zoom.floor());
+  }
+  
+  /// Updates markers with interpolated vehicle positions
+  /// 
+  /// This method is called whenever the interpolation state changes.
+  /// It updates only the markers for visible vehicles that have been interpolated.
+  Future<void> _updateInterpolatedMarkers(InterpolationGlobalState interpolationState) async {
+    if (_circleAnnotationManager == null || _isDisposed || !mounted) {
+      return;
+    }
+    
+    try {
+      // Get visible interpolated vehicles
+      final List<VehicleEntity> visibleVehicles = 
+          ref.read(vehicleInterpolationProvider.notifier).getVisibleInterpolatedVehicles();
+      
+      if (visibleVehicles.isEmpty) {
+        return;
+      }
+      
+      // Update markers for interpolated vehicles
+      final List<Future<void>> updateFutures = <Future<void>>[];
+      
+      for (final VehicleEntity vehicle in visibleVehicles) {
+        final CircleAnnotation? annotation = _currentAnnotations[vehicle.id];
+        if (annotation != null) {
+          // Create new annotation options with updated position
+          final CircleAnnotationOptions options = 
+              VehicleMarkerService.createAnnotationFromVehicle(vehicle);
+          
+          // Queue update (delete + recreate)
+          updateFutures.add(
+            _circleAnnotationManager!.delete(annotation).then((_) {
+              return _circleAnnotationManager!.create(options);
+            }).then((CircleAnnotation newAnnotation) {
+              _currentAnnotations[vehicle.id] = newAnnotation;
+            }).catchError((Object e) {
+              // Silently handle errors
+            })
+          );
+        }
+      }
+      
+      // Wait for all updates to complete in parallel
+      if (updateFutures.isNotEmpty) {
+        await Future.wait(updateFutures, eagerError: false);
+      }
+    } catch (e) {
+      // Silently handle errors to avoid disrupting the interpolation loop
+    }
+  }
 
   @override
   void dispose() {
     // Mark as disposed to prevent any further state updates
     _isDisposed = true;
     
-    // Cancel marker update timer
+    // Stop interpolation system
+    try {
+      ref.read(vehicleInterpolationProvider.notifier).stop();
+    } catch (e) {
+      debugPrint('Error stopping interpolation: $e');
+    }
+    
+    // Cancel timers
     _markerUpdateTimer?.cancel();
     _markerUpdateTimer = null;
+    _viewportUpdateTimer?.cancel();
+    _viewportUpdateTimer = null;
     
     // Clean up annotation managers
     // The managers will be automatically disposed when the map is disposed,
@@ -1279,5 +1501,3 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
     super.dispose();
   }
 }
-
-

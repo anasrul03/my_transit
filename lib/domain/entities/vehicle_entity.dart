@@ -14,6 +14,7 @@ class VehicleEntity extends Equatable {
   final List<String>? dataQualityWarnings;
   final String? routeShortName;
   final String? routeLongName;
+  final int? routeType;
 
   const VehicleEntity({
     required this.id,
@@ -29,6 +30,7 @@ class VehicleEntity extends Equatable {
     this.dataQualityWarnings,
     this.routeShortName,
     this.routeLongName,
+    this.routeType,
   });
 
   /// Creates a copy of this vehicle entity with the given fields replaced with new values
@@ -49,6 +51,7 @@ class VehicleEntity extends Equatable {
     List<String>? dataQualityWarnings,
     String? routeShortName,
     String? routeLongName,
+    int? routeType,
   }) {
     return VehicleEntity(
       id: id ?? this.id,
@@ -64,6 +67,7 @@ class VehicleEntity extends Equatable {
       dataQualityWarnings: dataQualityWarnings ?? this.dataQualityWarnings,
       routeShortName: routeShortName ?? this.routeShortName,
       routeLongName: routeLongName ?? this.routeLongName,
+      routeType: routeType ?? this.routeType,
     );
   }
 
@@ -82,6 +86,7 @@ class VehicleEntity extends Equatable {
         dataQualityWarnings,
         routeShortName,
         routeLongName,
+        routeType,
       ];
 }
 

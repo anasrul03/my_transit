@@ -16,10 +16,27 @@ final gtfsRealtimeRepositoryProvider = Provider<GtfsRealtimeRepository>((ref) {
 
 final gtfsRealtimeProvider = StateNotifierProvider<GtfsRealtimeNotifier, GtfsRealtimeState>(
   (ref) {
-    return GtfsRealtimeNotifier(
+    final notifier = GtfsRealtimeNotifier(
       repository: ref.read(gtfsRealtimeRepositoryProvider),
       mapFiltersNotifier: ref.read(mapFiltersProvider.notifier),
     );
+    
+    // Listen to filter changes and immediately fetch new data when agency or category changes
+    // This ensures the map updates immediately when the user selects a different operator
+    ref.listen<MapFiltersState>(
+      mapFiltersProvider,
+      (MapFiltersState? previous, MapFiltersState current) {
+        // Only fetch if agency or category actually changed
+        if (previous != null &&
+            (previous.selectedAgency != current.selectedAgency ||
+             previous.selectedCategory != current.selectedCategory)) {
+          debugPrint('🔄 Filter changed - fetching vehicles for new agency/category');
+          notifier.fetchVehiclePositions();
+        }
+      },
+    );
+    
+    return notifier;
   },
 );
 
