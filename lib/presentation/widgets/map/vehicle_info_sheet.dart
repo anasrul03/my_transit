@@ -7,6 +7,7 @@ import '../../providers/gtfs_static_provider.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/favorite_vehicles_provider.dart';
 import '../../providers/navigation_provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../../core/services/location_service.dart';
 import 'operator_selection_button.dart';
 
@@ -242,6 +243,10 @@ class _VehicleInfoSheetState extends ConsumerState<VehicleInfoSheet> {
         (FavoriteVehiclesState state) => state.favoriteVehicleIds.contains(widget.vehicle.id),
       ),
     );
+    
+    // Watch auth state to check if user is authenticated (not guest)
+    final authState = ref.watch(authStateProvider);
+    final bool isAuthenticated = authState.isAuthenticated;
     
     return DraggableScrollableSheet(
       initialChildSize: 0.55, // Show at 55% initially to ensure buttons are visible
@@ -662,30 +667,51 @@ class _VehicleInfoSheetState extends ConsumerState<VehicleInfoSheet> {
                       const SizedBox(width: 12),
                       
                       // Favorite button - touch-friendly size
-                      Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: Theme.of(context).colorScheme.outline,
-                            width: 2,
+                      // Only enabled for authenticated users (not guests)
+                      Tooltip(
+                        message: isAuthenticated
+                            ? (isFavorite ? 'Remove from favorites' : 'Add to favorites')
+                            : 'Sign in to add favorites',
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: isAuthenticated
+                                  ? Theme.of(context).colorScheme.outline
+                                  : Theme.of(context).colorScheme.outline.withOpacity(0.3),
+                              width: 2,
+                            ),
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: IconButton(
-                          onPressed: () {
-                            // Toggle favorite status
-                            ref.read(favoriteVehiclesProvider.notifier).toggleFavorite(widget.vehicle.id);
-                          },
-                          icon: Icon(
-                            isFavorite ? Icons.star : Icons.star_border,
-                            size: 24,
-                          ),
-                          color: isFavorite
-                              ? Colors.amber
-                              : Theme.of(context).colorScheme.onSurface,
-                          padding: const EdgeInsets.all(10),
-                          constraints: const BoxConstraints(
-                            minWidth: 44, // Compact but touch-friendly
-                            minHeight: 44,
+                          child: IconButton(
+                            onPressed: isAuthenticated
+                                ? () {
+                                    // Toggle favorite status (only for authenticated users)
+                                    // Pass full vehicle entity to include metadata (route_id, vehicle_type, etc.)
+                                    ref.read(favoriteVehiclesProvider.notifier).toggleFavorite(widget.vehicle);
+                                  }
+                                : () {
+                                    // Show message for guest users
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Please sign in to add favorites'),
+                                        duration: Duration(seconds: 2),
+                                      ),
+                                    );
+                                  },
+                            icon: Icon(
+                              isFavorite ? Icons.star : Icons.star_border,
+                              size: 24,
+                            ),
+                            color: isAuthenticated
+                                ? (isFavorite
+                                    ? Colors.amber
+                                    : Theme.of(context).colorScheme.onSurface)
+                                : Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
+                            padding: const EdgeInsets.all(10),
+                            constraints: const BoxConstraints(
+                              minWidth: 44, // Compact but touch-friendly
+                              minHeight: 44,
+                            ),
                           ),
                         ),
                       ),

@@ -3,10 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../widgets/navigation/bottom_nav_bar.dart';
 import '../widgets/map/mapbox_map_widget.dart';
 import '../providers/navigation_provider.dart';
-import '../views/routes/routes_tab_view.dart';
 import '../views/favourites/favourites_tab_view.dart';
 import '../views/schedules/schedules_tab_view.dart';
-import '../views/suggestions/suggestions_tab_view.dart';
+import '../views/profile/profile_tab_view.dart';
 
 /// Main home screen that displays the selected tab view
 /// 
@@ -33,10 +32,9 @@ class HomeScreen extends ConsumerWidget {
           index: navigationState.selectedTab.index,
           children: const [
             MapboxMapWidget(),       // TabType.map (index 0)
-            RoutesTabView(),         // TabType.routes (index 1)
-            FavouritesTabView(),     // TabType.favourites (index 2)
-            SchedulesTabView(),      // TabType.schedules (index 3)
-            SuggestionsTabView(),    // TabType.suggestions (index 4)
+            FavouritesTabView(),     // TabType.favourites (index 1)
+            SchedulesTabView(),      // TabType.schedules (index 2)
+            ProfileTabView(),        // TabType.profile (index 3)
           ],
         ),
       ),

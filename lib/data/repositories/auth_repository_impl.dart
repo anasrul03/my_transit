@@ -1,5 +1,6 @@
 import '../../core/errors/failures.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/utils/auth_error_mapper.dart';
 import '../../domain/entities/user_entity.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../models/user_model.dart';
@@ -33,8 +34,10 @@ class AuthRepositoryImpl implements AuthRepository {
 
       return Result.success(user.toEntity());
     } catch (e) {
+      // Map technical Supabase errors to user-friendly messages
+      final userFriendlyMessage = AuthErrorMapper.mapError(e);
       return Result.failure(
-        AuthFailure('Sign in failed: ${e.toString()}'),
+        AuthFailure(userFriendlyMessage),
       );
     }
   }
@@ -46,6 +49,11 @@ class AuthRepositoryImpl implements AuthRepository {
     String? name,
   }) async {
     try {
+      // Sign up the user with Supabase
+      // If email confirmation is disabled in Supabase settings, a session will be returned
+      // and the user will be automatically signed in
+      // If email confirmation is enabled, only a user will be returned (no session)
+      // and the user needs to confirm their email before signing in
       final response = await SupabaseService.auth.signUp(
         email: email,
         password: password,
@@ -58,6 +66,14 @@ class AuthRepositoryImpl implements AuthRepository {
         );
       }
 
+      // Note: If email confirmation is disabled in Supabase dashboard settings,
+      // response.session will contain a session and the user is automatically signed in.
+      // If email confirmation is enabled, response.session will be null and the user
+      // needs to confirm their email before they can sign in.
+      // The session is automatically stored by Supabase if it exists, so we don't
+      // need to manually handle it here - the auth state will be updated automatically
+      // through the session manager's auth state change listener.
+
       final user = UserModel(
         id: response.user!.id,
         email: response.user!.email,
@@ -67,8 +83,10 @@ class AuthRepositoryImpl implements AuthRepository {
 
       return Result.success(user.toEntity());
     } catch (e) {
+      // Map technical Supabase errors to user-friendly messages
+      final userFriendlyMessage = AuthErrorMapper.mapError(e);
       return Result.failure(
-        AuthFailure('Sign up failed: ${e.toString()}'),
+        AuthFailure(userFriendlyMessage),
       );
     }
   }
@@ -79,8 +97,10 @@ class AuthRepositoryImpl implements AuthRepository {
       await SupabaseService.auth.signOut();
       return const Result.success(null);
     } catch (e) {
+      // Map technical Supabase errors to user-friendly messages
+      final userFriendlyMessage = AuthErrorMapper.mapError(e);
       return Result.failure(
-        AuthFailure('Sign out failed: ${e.toString()}'),
+        AuthFailure(userFriendlyMessage),
       );
     }
   }
@@ -103,8 +123,10 @@ class AuthRepositoryImpl implements AuthRepository {
 
       return Result.success(userEntity.toEntity());
     } catch (e) {
+      // Map technical Supabase errors to user-friendly messages
+      final userFriendlyMessage = AuthErrorMapper.mapError(e);
       return Result.failure(
-        AuthFailure('Get current user failed: ${e.toString()}'),
+        AuthFailure(userFriendlyMessage),
       );
     }
   }

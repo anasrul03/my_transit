@@ -353,6 +353,36 @@ class GtfsStaticRepositoryImpl implements GtfsStaticRepository {
   }
 
   @override
+  Future<Result<Map<String, TripEntity>>> getTripsByIds(List<String> tripIds) async {
+    try {
+      await _loadStaticData();
+      await _ensureTripsLoaded();
+      
+      // Create a set for O(1) lookup
+      final Set<String> tripIdSet = tripIds.toSet();
+      
+      // Build map efficiently by filtering cached trips
+      final Map<String, TripEntity> tripsMap = <String, TripEntity>{};
+      if (_cachedTrips != null) {
+        for (final TripEntity trip in _cachedTrips!) {
+          if (tripIdSet.contains(trip.id)) {
+            tripsMap[trip.id] = trip;
+          }
+        }
+      }
+      
+      return Result.success(tripsMap);
+    } catch (e) {
+      if (e is Failure) {
+        return Result.failure(e);
+      }
+      return Result.failure(
+        ServerFailure('Failed to get trips by IDs: ${e.toString()}'),
+      );
+    }
+  }
+
+  @override
   Future<Result<List<TripEntity>>> getTripsByRouteId(String routeId) async {
     try {
       await _loadStaticData();

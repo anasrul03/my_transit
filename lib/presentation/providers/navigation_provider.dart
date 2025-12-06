@@ -7,14 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 enum TabType { 
   /// Map tab - displays the interactive map with vehicle positions
   map, 
-  /// Routes tab - allows users to search for transit routes
-  routes, 
   /// Favourites tab - displays user's favourite vehicles and routes
   favourites, 
   /// Schedules tab - shows transit schedules and timetables
   schedules, 
-  /// Suggestions tab - allows users to submit feedback and suggestions
-  suggestions 
+  /// Profile tab - displays user account information and allows submitting feedback
+  profile 
 }
 
 /// State class representing the current navigation state

@@ -63,10 +63,10 @@ run: get ## Run the app on connected device/emulator
 run-dev: get ## Run the app in development mode (with hot reload)
 	@echo "$(BLUE)Running app in development mode...$(NC)"
 	@echo "$(YELLOW)Hot reload enabled - Press 'r' to reload, 'R' to restart$(NC)"
-	@# Load ACCESS_TOKEN from .env if it exists and not already set
-	@if [ -z "$$ACCESS_TOKEN" ] && [ -f .env ]; then \
-		echo "$(YELLOW)Loading ACCESS_TOKEN from .env file...$(NC)"; \
-		export $$(grep -v '^#' .env | grep ACCESS_TOKEN | xargs); \
+	@# Load environment variables from .env, check configuration, and run Flutter
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env file...$(NC)"; \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs); \
 	fi; \
 	if [ -z "$$ACCESS_TOKEN" ]; then \
 		echo "$(YELLOW)Warning: ACCESS_TOKEN not set. Mapbox features will not work.$(NC)"; \
@@ -74,18 +74,33 @@ run-dev: get ## Run the app in development mode (with hot reload)
 	else \
 		echo "$(GREEN)ACCESS_TOKEN found: $${ACCESS_TOKEN:0:20}...$(NC)"; \
 	fi; \
-	if [ -z "$(DEVICE_ID)" ]; then \
-		if [ -n "$$ACCESS_TOKEN" ]; then \
-			$(FLUTTER) run --debug --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN; \
-		else \
-			$(FLUTTER) run --debug; \
-		fi \
+	if [ -z "$$SUPABASE_URL" ]; then \
+		echo "$(YELLOW)Warning: SUPABASE_URL not set. Supabase features will not work.$(NC)"; \
 	else \
-		if [ -n "$$ACCESS_TOKEN" ]; then \
-			$(FLUTTER) run --debug --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN -d $(DEVICE_ID); \
-		else \
-			$(FLUTTER) run --debug -d $(DEVICE_ID); \
-		fi \
+		echo "$(GREEN)SUPABASE_URL found: $${SUPABASE_URL:0:30}...$(NC)"; \
+	fi; \
+	if [ -z "$$SUPABASE_ANON_KEY" ]; then \
+		echo "$(YELLOW)Warning: SUPABASE_ANON_KEY not set. Supabase features will not work.$(NC)"; \
+	else \
+		echo "$(GREEN)SUPABASE_ANON_KEY found: $${SUPABASE_ANON_KEY:0:20}...$(NC)"; \
+	fi; \
+	DART_DEFINES=""; \
+	if [ -n "$$ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define ACCESS_TOKEN=$$ACCESS_TOKEN"; \
+	fi; \
+	if [ -n "$$SUPABASE_URL" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_URL=$$SUPABASE_URL"; \
+	fi; \
+	if [ -n "$$SUPABASE_ANON_KEY" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define SUPABASE_ANON_KEY=$$SUPABASE_ANON_KEY"; \
+	fi; \
+	if [ -n "$$MAPBOX_ACCESS_TOKEN" ]; then \
+		DART_DEFINES="$$DART_DEFINES --dart-define MAPBOX_ACCESS_TOKEN=$$MAPBOX_ACCESS_TOKEN"; \
+	fi; \
+	if [ -z "$(DEVICE_ID)" ]; then \
+		$(FLUTTER) run --debug $$DART_DEFINES; \
+	else \
+		$(FLUTTER) run --debug $$DART_DEFINES -d $(DEVICE_ID); \
 	fi
 
 run-release: get ## Run the app in release mode

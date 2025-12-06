@@ -7,7 +7,7 @@ import '../../../core/theme/app_theme.dart';
 /// 
 /// This widget displays a horizontal row of navigation tabs at the bottom
 /// of the screen. Each tab represents a different section of the app (Map,
-/// Routes, Favourites, Schedules, Suggestions). The selected tab is highlighted
+/// Favourites, Schedules, Profile). The selected tab is highlighted
 /// with the primary color, and tapping a tab switches to that section.
 /// 
 /// The widget is responsive and uses SafeArea to respect device notches and
@@ -24,10 +24,10 @@ class BottomNavBar extends ConsumerWidget {
 
     return Container(
       decoration: BoxDecoration(
-        color: AppTheme.darkSurface,
+        color: Theme.of(context).colorScheme.surface,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.3),
+            color: Theme.of(context).shadowColor.withValues(alpha: 0.3),
             blurRadius: 4,
             offset: const Offset(0, -2),
           ),
@@ -48,12 +48,6 @@ class BottomNavBar extends ConsumerWidget {
                 onTap: () => notifier.selectTab(TabType.map),
               ),
               _NavTab(
-                label: 'Routes',
-                icon: Icons.route,
-                isSelected: navigationState.selectedTab == TabType.routes,
-                onTap: () => notifier.selectTab(TabType.routes),
-              ),
-              _NavTab(
                 label: 'Favourites',
                 icon: Icons.favorite,
                 isSelected: navigationState.selectedTab == TabType.favourites,
@@ -66,10 +60,10 @@ class BottomNavBar extends ConsumerWidget {
                 onTap: () => notifier.selectTab(TabType.schedules),
               ),
               _NavTab(
-                label: 'Suggestions',
-                icon: Icons.lightbulb,
-                isSelected: navigationState.selectedTab == TabType.suggestions,
-                onTap: () => notifier.selectTab(TabType.suggestions),
+                label: 'Profile',
+                icon: Icons.person,
+                isSelected: navigationState.selectedTab == TabType.profile,
+                onTap: () => notifier.selectTab(TabType.profile),
               ),
             ],
           ),
@@ -119,7 +113,9 @@ class _NavTab extends StatelessWidget {
               // Icon that changes color based on selection state
               Icon(
                 icon,
-                color: isSelected ? AppTheme.primaryColor : Colors.white70,
+                color: isSelected 
+                    ? AppTheme.primaryColor 
+                    : Theme.of(context).iconTheme.color?.withValues(alpha: 0.7),
                 size: 22,
               ),
               const SizedBox(height: 2),
@@ -129,7 +125,9 @@ class _NavTab extends StatelessWidget {
                   label,
                   style: TextStyle(
                     fontSize: 10,
-                    color: isSelected ? AppTheme.primaryColor : Colors.white70,
+                    color: isSelected 
+                        ? AppTheme.primaryColor 
+                        : Theme.of(context).textTheme.bodySmall?.color,
                     fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                   ),
                   maxLines: 1,

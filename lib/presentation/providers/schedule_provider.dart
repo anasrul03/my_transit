@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/errors/failures.dart';
 import '../../domain/entities/stop_entity.dart';
@@ -195,7 +196,8 @@ class ScheduleNotifier extends StateNotifier<ScheduleState> {
   /// Clears the selected stop and schedule data
   /// 
   /// This method resets the schedule view by clearing the selected stop
-  /// and all schedule entries.
+  /// and all schedule entries. This also effectively clears any cached
+  /// schedule data since scheduleEntries is reset.
   void clearSelection() {
     state = state.copyWith(
       selectedStop: null,
@@ -204,11 +206,30 @@ class ScheduleNotifier extends StateNotifier<ScheduleState> {
     );
   }
 
+  /// Resets the entire schedule view to initial state
+  /// 
+  /// This clears all state including search query, selected stop,
+  /// matching stops, and schedule entries. Use this to return to
+  /// the initial view showing all available stops.
+  void resetToInitialState() {
+    state = const ScheduleState(
+      searchQuery: '',
+      selectedStop: null,
+      matchingStops: [],
+      scheduleEntries: [],
+      isLoading: false,
+      error: null,
+    );
+  }
+
+
   /// Loads schedule data for a specific stop
   /// 
   /// This private method fetches all stop_times for the given stop, then retrieves
   /// the corresponding trips and routes. It combines this data into ScheduleEntryEntity
   /// objects and sorts them chronologically by arrival/departure time.
+  /// 
+  /// Optimized to use batch trip fetching and pre-computed time values for better performance.
   /// 
   /// [stop] - The stop entity to load schedule data for
   /// 
@@ -237,29 +258,33 @@ class ScheduleNotifier extends StateNotifier<ScheduleState> {
       return;
     }
 
-    // Get routes map for efficient lookups
+    // Build routes map for efficient O(1) lookups
     final Map<String, RouteEntity> routesMap = <String, RouteEntity>{};
     for (final RouteEntity route in _gtfsStaticState.routes) {
       routesMap[route.id] = route;
     }
 
-    // Get trips map for efficient lookups
-    // Fetch trips from repository (repository has cached data)
-    final Map<String, TripEntity> tripsMap = <String, TripEntity>{};
-    
-    // Fetch trips that we need (get unique trip IDs first to avoid duplicate fetches)
+    // Get unique trip IDs to fetch in batch (much more efficient than individual calls)
     final Set<String> uniqueTripIds = stopTimes.map((StopTimeEntity st) => st.tripId).toSet();
     
-    for (final String tripId in uniqueTripIds) {
-      // Fetch trip from repository (uses cached data if available)
-      final tripResult = await _repository.getTripById(tripId);
-      if (tripResult.isSuccess && tripResult.data != null) {
-        tripsMap[tripId] = tripResult.data!;
-      }
+    // Fetch all trips in a single batch call instead of individual calls
+    // This reduces from O(n*m) to O(n) complexity
+    final tripsResult = await _repository.getTripsByIds(uniqueTripIds.toList());
+    
+    if (!tripsResult.isSuccess) {
+      state = state.copyWith(
+        isLoading: false,
+        error: tripsResult.failure ?? ServerFailure('Failed to fetch trips for stop ${stop.id}'),
+      );
+      return;
     }
 
-    // Build schedule entries by combining stop_time, trip, route, and stop data
-    final List<ScheduleEntryEntity> entries = <ScheduleEntryEntity>[];
+    final Map<String, TripEntity> tripsMap = tripsResult.data ?? {};
+
+    // Build schedule entries with pre-computed time values for efficient sorting
+    // This avoids parsing time strings multiple times during sorting
+    final List<ScheduleEntryWithTime> entriesWithTime = <ScheduleEntryWithTime>[];
+    
     for (final StopTimeEntity stopTime in stopTimes) {
       final TripEntity? trip = tripsMap[stopTime.tripId];
       if (trip == null) continue; // Skip if trip not found
@@ -267,17 +292,24 @@ class ScheduleNotifier extends StateNotifier<ScheduleState> {
       final RouteEntity? route = routesMap[trip.routeId];
       if (route == null) continue; // Skip if route not found
 
-      // Create schedule entry
-      entries.add(ScheduleEntryEntity(
-        stopTime: stopTime,
-        trip: trip,
-        route: route,
-        stop: stop,
+      // Pre-compute time value for sorting (parse once, use multiple times)
+      final String? timeString = stopTime.departureTime ?? stopTime.arrivalTime;
+      final int timeInSeconds = timeString != null ? _parseTimeToSeconds(timeString) : 0;
+
+      // Create schedule entry with pre-computed time
+      entriesWithTime.add(ScheduleEntryWithTime(
+        entry: ScheduleEntryEntity(
+          stopTime: stopTime,
+          trip: trip,
+          route: route,
+          stop: stop,
+        ),
+        timeInSeconds: timeInSeconds,
       ));
     }
 
     // If we found stop_times but couldn't build any entries, it indicates missing trip/route data
-    if (entries.isEmpty && stopTimes.isNotEmpty) {
+    if (entriesWithTime.isEmpty && stopTimes.isNotEmpty) {
       state = state.copyWith(
         isLoading: false,
         scheduleEntries: [],
@@ -289,23 +321,19 @@ class ScheduleNotifier extends StateNotifier<ScheduleState> {
       return;
     }
 
-    // Sort entries chronologically by time
-    // Handle GTFS time format which can be >24:00:00 for trips spanning midnight
-    entries.sort((ScheduleEntryEntity a, ScheduleEntryEntity b) {
-      final String? timeA = a.stopTime.departureTime ?? a.stopTime.arrivalTime;
-      final String? timeB = b.stopTime.departureTime ?? b.stopTime.arrivalTime;
-
-      if (timeA == null && timeB == null) return 0;
-      if (timeA == null) return 1;
-      if (timeB == null) return -1;
-
-      // Parse time strings (HH:MM:SS format)
-      // Handle times >24:00:00 by converting to seconds since midnight
-      final int secondsA = _parseTimeToSeconds(timeA);
-      final int secondsB = _parseTimeToSeconds(timeB);
-
-      return secondsA.compareTo(secondsB);
-    });
+    // Sort entries chronologically using pre-computed time values
+    // For large datasets (>1000 entries), use compute isolate to avoid blocking UI
+    final List<ScheduleEntryEntity> entries;
+    if (entriesWithTime.length > 1000) {
+      // Use compute isolate for large datasets to keep UI responsive
+      entries = await compute(_sortScheduleEntries, entriesWithTime);
+    } else {
+      // For smaller datasets, sort directly (faster due to no isolate overhead)
+      entriesWithTime.sort((ScheduleEntryWithTime a, ScheduleEntryWithTime b) {
+        return a.timeInSeconds.compareTo(b.timeInSeconds);
+      });
+      entries = entriesWithTime.map((ScheduleEntryWithTime e) => e.entry).toList();
+    }
 
     // Update state with schedule entries
     state = state.copyWith(
@@ -335,5 +363,41 @@ class ScheduleNotifier extends StateNotifier<ScheduleState> {
     // Convert to total seconds since midnight
     return (hours * 3600) + (minutes * 60) + seconds;
   }
+}
+
+/// Helper class to store schedule entry with pre-computed time value
+/// 
+/// This allows efficient sorting without repeatedly parsing time strings.
+/// The time value is computed once when creating the entry and reused during sorting.
+/// Made public for compute isolate serialization.
+class ScheduleEntryWithTime {
+  /// The schedule entry entity
+  final ScheduleEntryEntity entry;
+  
+  /// Pre-computed time value in seconds since midnight for efficient sorting
+  final int timeInSeconds;
+
+  const ScheduleEntryWithTime({
+    required this.entry,
+    required this.timeInSeconds,
+  });
+}
+
+/// Top-level function for compute isolate to sort schedule entries
+/// 
+/// This function is used in a compute isolate to sort large datasets
+/// without blocking the main UI thread. Must be top-level for compute to work.
+/// 
+/// [entriesWithTime] - List of schedule entries with pre-computed time values
+/// 
+/// Returns: Sorted list of schedule entries
+List<ScheduleEntryEntity> _sortScheduleEntries(List<ScheduleEntryWithTime> entriesWithTime) {
+  // Sort entries by pre-computed time values
+  entriesWithTime.sort((ScheduleEntryWithTime a, ScheduleEntryWithTime b) {
+    return a.timeInSeconds.compareTo(b.timeInSeconds);
+  });
+  
+  // Extract schedule entries from sorted list
+  return entriesWithTime.map((ScheduleEntryWithTime e) => e.entry).toList();
 }
 

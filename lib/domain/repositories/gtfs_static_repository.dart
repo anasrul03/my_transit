@@ -24,6 +24,16 @@ abstract class GtfsStaticRepository {
   /// Fetch trip by ID
   Future<Result<TripEntity?>> getTripById(String tripId);
   
+  /// Fetch multiple trips by their IDs in batch
+  /// 
+  /// This method is more efficient than calling getTripById multiple times
+  /// as it loads trips once and creates a map for O(1) lookups.
+  /// 
+  /// [tripIds] - List of trip IDs to fetch
+  /// 
+  /// Returns: Map of trip ID to TripEntity for efficient lookups
+  Future<Result<Map<String, TripEntity>>> getTripsByIds(List<String> tripIds);
+  
   /// Fetch trips by route ID
   Future<Result<List<TripEntity>>> getTripsByRouteId(String routeId);
   

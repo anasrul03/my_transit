@@ -30,6 +30,24 @@ class AppTheme {
   /// lighter surface for content that needs to stand out.
   static const Color darkCard = Color(0xFF2C2C2C);
   
+  /// Light theme background color
+  /// 
+  /// This is the main background color for light mode, providing a clean
+  /// white/light gray base that is easy on the eyes in well-lit environments.
+  static const Color lightBackground = Color(0xFFF5F5F5);
+  
+  /// Light theme surface color
+  /// 
+  /// This color is used for elevated surfaces like app bars and bottom sheets
+  /// in light mode, providing subtle contrast against the background.
+  static const Color lightSurface = Color(0xFFFFFFFF);
+  
+  /// Light theme card color
+  /// 
+  /// This color is used for cards and input fields in light mode, providing
+  /// a clean white surface for content.
+  static const Color lightCard = Color(0xFFFFFFFF);
+  
   /// Gets the dark theme configuration for the app
   /// 
   /// This method returns a complete ThemeData object configured for dark mode
@@ -120,6 +138,97 @@ class AppTheme {
       ),
     );
   }
+  
+  /// Gets the light theme configuration for the app
+  /// 
+  /// This method returns a complete ThemeData object configured for light mode
+  /// with Material 3 design principles. It mirrors the dark theme structure
+  /// but uses light-appropriate colors for better readability in bright environments.
+  /// 
+  /// Returns: ThemeData configured for light mode with app-specific styling
+  static ThemeData get lightTheme {
+    return ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.light,
+      colorScheme: ColorScheme.light(
+        primary: primaryColor,
+        secondary: primaryColor,
+        surface: lightSurface,
+        background: lightBackground,
+        error: Colors.red.shade700,
+        onPrimary: Colors.white,
+        onSecondary: Colors.white,
+        onSurface: Colors.black87,
+        onBackground: Colors.black87,
+        onError: Colors.white,
+      ),
+      scaffoldBackgroundColor: lightBackground,
+      cardColor: lightCard,
+      appBarTheme: AppBarTheme(
+        backgroundColor: lightSurface,
+        elevation: 0,
+        centerTitle: true,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        titleTextStyle: TextStyle(
+          color: Colors.black87,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textTheme: TextTheme(
+        displayLarge: TextStyle(color: Colors.black87),
+        displayMedium: TextStyle(color: Colors.black87),
+        displaySmall: TextStyle(color: Colors.black87),
+        headlineLarge: TextStyle(color: Colors.black87),
+        headlineMedium: TextStyle(color: Colors.black87),
+        headlineSmall: TextStyle(color: Colors.black87),
+        titleLarge: TextStyle(color: Colors.black87),
+        titleMedium: TextStyle(color: Colors.black87),
+        titleSmall: TextStyle(color: Colors.black87),
+        bodyLarge: TextStyle(color: Colors.black87),
+        bodyMedium: TextStyle(color: Colors.black87),
+        bodySmall: TextStyle(color: Colors.black54),
+        labelLarge: TextStyle(color: Colors.black87),
+        labelMedium: TextStyle(color: Colors.black87),
+        labelSmall: TextStyle(color: Colors.black54),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: lightCard,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(color: Colors.grey.shade400),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(color: Colors.grey.shade400),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: primaryColor, width: 2),
+        ),
+        labelStyle: TextStyle(color: Colors.black54),
+        hintStyle: TextStyle(color: Colors.grey.shade400),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryColor,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ),
+      ),
+      cardTheme: CardThemeData(
+        color: lightCard,
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
+  }
 }
 
 /// Custom spacing constants for consistent layout
@@ -155,59 +264,62 @@ class AppSpacing {
 /// - Headings for titles and section headers
 /// - Body for regular content
 /// - Caption for small supporting text
+/// 
+/// Note: Colors are now theme-aware and should be used with context.
+/// For static styles without context, colors will be inherited from theme.
 class AppTypography {
   /// Heading 1 style - largest heading (32px, bold)
   /// 
-  /// Used for main page titles and primary headings
+  /// Used for main page titles and primary headings.
+  /// Color is inherited from theme's text style.
   static const TextStyle heading1 = TextStyle(
     fontSize: 32,
     fontWeight: FontWeight.bold,
-    color: Colors.white,
   );
   
   /// Heading 2 style - secondary heading (24px, bold)
   /// 
-  /// Used for section titles and secondary headings
+  /// Used for section titles and secondary headings.
+  /// Color is inherited from theme's text style.
   static const TextStyle heading2 = TextStyle(
     fontSize: 24,
     fontWeight: FontWeight.bold,
-    color: Colors.white,
   );
   
   /// Heading 3 style - tertiary heading (20px, semi-bold)
   /// 
-  /// Used for subsection titles and tertiary headings
+  /// Used for subsection titles and tertiary headings.
+  /// Color is inherited from theme's text style.
   static const TextStyle heading3 = TextStyle(
     fontSize: 20,
     fontWeight: FontWeight.w600,
-    color: Colors.white,
   );
   
   /// Body text style - regular content (16px, normal)
   /// 
-  /// Used for regular paragraph text and body content
+  /// Used for regular paragraph text and body content.
+  /// Color is inherited from theme's text style.
   static const TextStyle body = TextStyle(
     fontSize: 16,
     fontWeight: FontWeight.normal,
-    color: Colors.white,
   );
   
-  /// Small body text style - secondary content (14px, normal, 70% opacity)
+  /// Small body text style - secondary content (14px, normal)
   /// 
-  /// Used for secondary text, descriptions, and less prominent content
+  /// Used for secondary text, descriptions, and less prominent content.
+  /// Color is inherited from theme's bodySmall text style.
   static const TextStyle bodySmall = TextStyle(
     fontSize: 14,
     fontWeight: FontWeight.normal,
-    color: Colors.white70,
   );
   
-  /// Caption style - smallest text (12px, normal, 54% opacity)
+  /// Caption style - smallest text (12px, normal)
   /// 
-  /// Used for captions, labels, and very small supporting text
+  /// Used for captions, labels, and very small supporting text.
+  /// Color is inherited from theme's labelSmall text style.
   static const TextStyle caption = TextStyle(
     fontSize: 12,
     fontWeight: FontWeight.normal,
-    color: Colors.white54,
   );
 }
 

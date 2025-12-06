@@ -810,8 +810,8 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
               const SizedBox(height: 12),
               Text(
                 message,
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: TextStyle(
+                  color: Theme.of(context).textTheme.bodyMedium?.color?.withValues(alpha: 0.7),
                   fontSize: 15,
                 ),
                 textAlign: TextAlign.center,
@@ -860,8 +860,8 @@ class _MapboxMapWidgetState extends ConsumerState<MapboxMapWidget> {
               const SizedBox(height: 12),
               Text(
                 mapWidgetState.errorMessage ?? 'An error occurred while loading the map',
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: TextStyle(
+                  color: Theme.of(context).textTheme.bodyMedium?.color?.withValues(alpha: 0.7),
                   fontSize: 14,
                 ),
                 textAlign: TextAlign.center,

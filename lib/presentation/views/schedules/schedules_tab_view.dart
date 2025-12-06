@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/debounce.dart';
+import '../../../core/errors/failures.dart';
 import '../../../domain/entities/stop_entity.dart';
 import '../../../domain/entities/schedule_entry_entity.dart';
 import '../../providers/schedule_provider.dart';
@@ -17,21 +19,46 @@ class SchedulesTabView extends ConsumerStatefulWidget {
 class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
   final TextEditingController _searchController = TextEditingController();
   final Debouncer _searchDebouncer = Debouncer(delay: const Duration(milliseconds: 300));
+  
+  // Cache for grouped schedule entries to avoid recalculating on every build
+  Map<String, List<ScheduleEntryEntity>>? _cachedGroupedEntries;
+  List<ScheduleEntryEntity>? _cachedEntriesList;
+  
+  // Cache for period order to avoid recalculating
+  List<String>? _cachedPeriodOrder;
+  
+  // Track last selected stop ID to detect stop changes and reset cache
+  String? _lastSelectedStopId;
 
   @override
   void dispose() {
     _searchController.dispose();
     _searchDebouncer.dispose();
+    // Reset cache when widget is disposed
+    _cachedGroupedEntries = null;
+    _cachedEntriesList = null;
+    _cachedPeriodOrder = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final ScheduleState scheduleState = ref.watch(scheduleProvider);
-    final GtfsStaticState gtfsStaticState = ref.watch(gtfsStaticProvider);
+    // Use selective provider watching to minimize rebuilds
+    // Only watch specific properties that affect this widget
+    final bool isLoading = ref.watch(scheduleProvider.select((ScheduleState s) => s.isLoading));
+    final StopEntity? selectedStop = ref.watch(scheduleProvider.select((ScheduleState s) => s.selectedStop));
+    final String searchQuery = ref.watch(scheduleProvider.select((ScheduleState s) => s.searchQuery));
+    final List<StopEntity> matchingStops = ref.watch(scheduleProvider.select((ScheduleState s) => s.matchingStops));
+    final List<ScheduleEntryEntity> scheduleEntries = ref.watch(scheduleProvider.select((ScheduleState s) => s.scheduleEntries));
+    final Failure? error = ref.watch(scheduleProvider.select((ScheduleState s) => s.error));
+    
+    // Watch GTFS static state selectively
+    final bool gtfsIsLoading = ref.watch(gtfsStaticProvider.select((GtfsStaticState s) => s.isLoading));
+    final bool gtfsIsLoaded = ref.watch(gtfsStaticProvider.select((GtfsStaticState s) => s.isLoaded));
+    final List<StopEntity> allStops = ref.watch(gtfsStaticProvider.select((GtfsStaticState s) => s.stops));
 
     return Container(
-      color: AppTheme.darkBackground,
+      color: Theme.of(context).scaffoldBackgroundColor,
       padding: const EdgeInsets.all(AppSpacing.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -39,12 +66,14 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
           // Header
           Text(
             'Schedules',
-            style: AppTypography.heading2,
+            style: AppTypography.heading2.copyWith(
+              color: Theme.of(context).textTheme.headlineMedium?.color,
+            ),
           ),
           const SizedBox(height: AppSpacing.md),
 
           // GTFS static data loading indicator
-          if (gtfsStaticState.isLoading)
+          if (gtfsIsLoading)
             Container(
               padding: const EdgeInsets.all(AppSpacing.sm),
               margin: const EdgeInsets.only(bottom: AppSpacing.md),
@@ -66,7 +95,9 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
                   Expanded(
                     child: Text(
                       'Loading transit data...',
-                      style: AppTypography.bodySmall,
+                      style: AppTypography.bodySmall.copyWith(
+                        color: Theme.of(context).textTheme.bodySmall?.color,
+                      ),
                     ),
                   ),
                 ],
@@ -81,7 +112,7 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
               hintText: 'Enter stop name or code',
               prefixIcon: Icon(Icons.search),
             ),
-            enabled: gtfsStaticState.isLoaded && !gtfsStaticState.isLoading,
+            enabled: gtfsIsLoaded && !gtfsIsLoading,
             onChanged: (String value) {
               // Debounce search to avoid excessive filtering
               _searchDebouncer(() {
@@ -92,7 +123,7 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
           const SizedBox(height: AppSpacing.md),
 
           // Error display
-          if (scheduleState.error != null)
+          if (error != null)
             Container(
               padding: const EdgeInsets.all(AppSpacing.sm),
               margin: const EdgeInsets.only(bottom: AppSpacing.md),
@@ -107,7 +138,7 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
                   const SizedBox(width: AppSpacing.sm),
                   Expanded(
                     child: Text(
-                      scheduleState.error!.toString(),
+                      error.toString(),
                       style: AppTypography.bodySmall.copyWith(color: Colors.red),
                     ),
                   ),
@@ -116,14 +147,22 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
             ),
 
           // Selected stop display
-          if (scheduleState.selectedStop != null) ...[
-            _buildSelectedStopHeader(scheduleState.selectedStop!),
+          if (selectedStop != null) ...[
+            _buildSelectedStopHeader(selectedStop),
             const SizedBox(height: AppSpacing.md),
           ],
 
           // Content area: either stop search results or schedule list
           Expanded(
-            child: _buildContent(scheduleState),
+            child: _buildContent(
+              isLoading: isLoading,
+              selectedStop: selectedStop,
+              searchQuery: searchQuery,
+              matchingStops: matchingStops,
+              scheduleEntries: scheduleEntries,
+              gtfsIsLoaded: gtfsIsLoaded,
+              allStops: allStops,
+            ),
           ),
         ],
       ),
@@ -141,7 +180,7 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
     return Container(
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
-        color: AppTheme.darkCard,
+        color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
@@ -154,13 +193,17 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
               children: [
                 Text(
                   stop.name ?? 'Unknown Stop',
-                  style: AppTypography.heading3,
+                  style: AppTypography.heading3.copyWith(
+                    color: Theme.of(context).textTheme.headlineSmall?.color,
+                  ),
                 ),
                 if (stop.code != null) ...[
                   const SizedBox(height: AppSpacing.xs),
                   Text(
                     'Code: ${stop.code}',
-                    style: AppTypography.bodySmall,
+                    style: AppTypography.bodySmall.copyWith(
+                      color: Theme.of(context).textTheme.bodySmall?.color,
+                    ),
                   ),
                 ],
               ],
@@ -169,8 +212,22 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
           IconButton(
             icon: const Icon(Icons.close),
             onPressed: () {
-              ref.read(scheduleProvider.notifier).clearSelection();
+              // Reset all schedule flow state when user taps X to return to initial state
+              // This will show all stops list again
+              
+              // Clear the search text field
               _searchController.clear();
+              
+              // Reset local cache with setState to trigger rebuild
+              setState(() {
+                _cachedGroupedEntries = null;
+                _cachedEntriesList = null;
+                _cachedPeriodOrder = null;
+                _lastSelectedStopId = null;
+              });
+              
+              // Reset the entire schedule state to initial (empty search, no selection)
+              ref.read(scheduleProvider.notifier).resetToInitialState();
             },
             tooltip: 'Clear selection',
           ),
@@ -182,14 +239,28 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
   /// Builds the main content area based on current state
   /// 
   /// Shows different content based on whether a stop is selected, loading,
-  /// or showing search results.
+  /// or showing search results. When no search query exists, shows all stops.
   /// 
-  /// [state] - The current schedule state
+  /// [isLoading] - Whether schedule data is currently loading
+  /// [selectedStop] - The currently selected stop, if any
+  /// [searchQuery] - The current search query string
+  /// [matchingStops] - List of stops matching the search query
+  /// [scheduleEntries] - List of schedule entries for the selected stop
+  /// [gtfsIsLoaded] - Whether GTFS static data is loaded
+  /// [allStops] - All available stops from GTFS static data
   /// 
   /// Returns: Widget displaying appropriate content for current state
-  Widget _buildContent(ScheduleState state) {
+  Widget _buildContent({
+    required bool isLoading,
+    required StopEntity? selectedStop,
+    required String searchQuery,
+    required List<StopEntity> matchingStops,
+    required List<ScheduleEntryEntity> scheduleEntries,
+    required bool gtfsIsLoaded,
+    required List<StopEntity> allStops,
+  }) {
     // Show loading indicator if loading schedule data
-    if (state.isLoading) {
+    if (isLoading) {
       return const Center(
         child: CircularProgressIndicator(
           color: AppTheme.primaryColor,
@@ -198,16 +269,21 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
     }
 
     // If stop is selected, show schedule list
-    if (state.selectedStop != null) {
-      return _buildScheduleList(state.scheduleEntries);
+    if (selectedStop != null) {
+      return _buildScheduleList(scheduleEntries);
     }
 
     // If search query exists, show matching stops
-    if (state.searchQuery.isNotEmpty) {
-      return _buildStopSearchResults(state.matchingStops);
+    if (searchQuery.isNotEmpty) {
+      return _buildStopSearchResults(matchingStops);
     }
 
-    // Default: show empty state
+    // Default: show all stops if GTFS data is loaded
+    if (gtfsIsLoaded && allStops.isNotEmpty) {
+      return _buildStopSearchResults(allStops);
+    }
+
+    // Show empty state only if GTFS data is not loaded or no stops available
     return _buildEmptyState();
   }
 
@@ -228,17 +304,21 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
             Icon(
               Icons.search_off,
               size: 64,
-              color: Colors.white.withValues(alpha: 0.5),
+              color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.5),
             ),
             const SizedBox(height: AppSpacing.md),
             Text(
               'No stops found',
-              style: AppTypography.body,
+              style: AppTypography.body.copyWith(
+                color: Theme.of(context).textTheme.bodyLarge?.color,
+              ),
             ),
             const SizedBox(height: AppSpacing.xs),
             Text(
               'Try a different search term',
-              style: AppTypography.bodySmall,
+              style: AppTypography.bodySmall.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color,
+              ),
             ),
           ],
         ),
@@ -246,53 +326,31 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
     }
 
     return ListView.builder(
+      // Performance optimizations for ListView
+      cacheExtent: 500, // Cache 500 pixels worth of items for smoother scrolling
+      addAutomaticKeepAlives: false, // Items don't need to maintain state
+      addRepaintBoundaries: true, // Isolate repaints to individual items
       itemCount: stops.length,
       itemBuilder: (BuildContext context, int index) {
         final StopEntity stop = stops[index];
-        return _buildStopListItem(stop);
+        return StopListItem(
+          key: ValueKey<String>(stop.id),
+          stop: stop,
+          onTap: () {
+            // Select stop and load schedule
+            ref.read(scheduleProvider.notifier).selectStop(stop);
+          },
+        );
       },
     );
   }
 
-  /// Builds a single stop list item
-  /// 
-  /// Displays stop information in a tappable card that selects the stop
-  /// when tapped.
-  /// 
-  /// [stop] - The stop entity to display
-  /// 
-  /// Returns: Widget displaying stop information
-  Widget _buildStopListItem(StopEntity stop) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: ListTile(
-        leading: const Icon(
-          Icons.location_on,
-          color: AppTheme.primaryColor,
-        ),
-        title: Text(
-          stop.name ?? 'Unknown Stop',
-          style: AppTypography.body,
-        ),
-        subtitle: stop.code != null
-            ? Text(
-                'Code: ${stop.code}',
-                style: AppTypography.bodySmall,
-              )
-            : null,
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () {
-          // Select stop and load schedule
-          ref.read(scheduleProvider.notifier).selectStop(stop);
-        },
-      ),
-    );
-  }
 
   /// Builds the schedule list for the selected stop
   /// 
   /// Displays a chronological list of all schedule entries (arrival/departure times)
   /// for the selected stop. Each entry shows time, route, and destination.
+  /// Uses cached grouping to avoid recalculating on every build.
   /// 
   /// [entries] - List of schedule entry entities sorted chronologically
   /// 
@@ -306,36 +364,74 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
             Icon(
               Icons.schedule,
               size: 64,
-              color: Colors.white.withValues(alpha: 0.5),
+              color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.5),
             ),
             const SizedBox(height: AppSpacing.md),
             Text(
               'No schedule available',
-              style: AppTypography.body,
+              style: AppTypography.body.copyWith(
+                color: Theme.of(context).textTheme.bodyLarge?.color,
+              ),
             ),
             const SizedBox(height: AppSpacing.xs),
             Text(
               'This stop has no scheduled trips',
-              style: AppTypography.bodySmall,
+              style: AppTypography.bodySmall.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color,
+              ),
             ),
           ],
         ),
       );
     }
 
-    // Group entries by time period for better readability
-    final Map<String, List<ScheduleEntryEntity>> groupedEntries =
-        _groupEntriesByPeriod(entries);
+    // Reset cache if selected stop changed or entries list changed
+    // Check if entries list has changed by comparing identity and length
+    final StopEntity? currentSelectedStop = ref.read(scheduleProvider.select((ScheduleState s) => s.selectedStop));
+    final String? currentStopId = currentSelectedStop?.id;
+    final bool stopChanged = _lastSelectedStopId != currentStopId;
+    
+    if (stopChanged) {
+      // Reset cache when stop changes (including when cleared to null)
+      _cachedGroupedEntries = null;
+      _cachedEntriesList = null;
+      _cachedPeriodOrder = null;
+      _lastSelectedStopId = currentStopId;
+    }
+    
+    // Use cached grouped entries if entries haven't changed
+    // Check if entries list has changed by comparing identity
+    if (_cachedGroupedEntries == null || 
+        _cachedEntriesList != entries ||
+        _cachedEntriesList?.length != entries.length) {
+      // Recalculate grouped entries only when entries change
+      _cachedEntriesList = entries;
+      _cachedGroupedEntries = _groupEntriesByPeriod(entries);
+      _cachedPeriodOrder = _cachedGroupedEntries!.keys.toList()
+        ..sort((String a, String b) {
+          // Extract start hour from period name for sorting
+          final int hourA = int.tryParse(a.split('(')[1].split(':')[0]) ?? 0;
+          final int hourB = int.tryParse(b.split('(')[1].split(':')[0]) ?? 0;
+          return hourA.compareTo(hourB);
+        });
+    }
+
+    final Map<String, List<ScheduleEntryEntity>> groupedEntries = _cachedGroupedEntries!;
+    final List<String> periodOrder = _cachedPeriodOrder!;
 
     return ListView.builder(
-      itemCount: groupedEntries.length,
+      // Performance optimizations for ListView
+      cacheExtent: 500, // Cache 500 pixels worth of items for smoother scrolling
+      addAutomaticKeepAlives: false, // Items don't need to maintain state
+      addRepaintBoundaries: true, // Isolate repaints to individual items
+      itemCount: periodOrder.length,
       itemBuilder: (BuildContext context, int index) {
-        final String period = groupedEntries.keys.elementAt(index);
-        final List<ScheduleEntryEntity> periodEntries =
-            groupedEntries[period]!;
+        final String period = periodOrder[index];
+        final List<ScheduleEntryEntity> periodEntries = groupedEntries[period]!;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          key: ValueKey<String>('period_$period'),
           children: [
             // Period header
             Padding(
@@ -345,12 +441,20 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
               ),
               child: Text(
                 period,
-                style: AppTypography.heading3,
+                style: AppTypography.heading3.copyWith(
+                  color: Theme.of(context).textTheme.headlineSmall?.color,
+                ),
               ),
             ),
             // Schedule entries for this period
-            ...periodEntries.map((ScheduleEntryEntity entry) =>
-                _buildScheduleEntryItem(entry)),
+            ...periodEntries.map((ScheduleEntryEntity entry) {
+              // Create unique key from trip ID, stop ID, and stop sequence
+              final String entryKey = '${entry.trip.id}_${entry.stopTime.stopId}_${entry.stopTime.stopSequence}';
+              return ScheduleEntryItem(
+                key: ValueKey<String>(entryKey),
+                entry: entry,
+              );
+            }),
           ],
         );
       },
@@ -360,6 +464,7 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
   /// Groups schedule entries by time period (Morning, Afternoon, Evening, Night)
   /// 
   /// This helps organize the schedule display for better readability.
+  /// Optimized to parse time strings only once per entry.
   /// 
   /// [entries] - List of schedule entries to group
   /// 
@@ -368,57 +473,147 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
       List<ScheduleEntryEntity> entries) {
     final Map<String, List<ScheduleEntryEntity>> grouped = <String, List<ScheduleEntryEntity>>{};
 
+    // Pre-define period constants to avoid string creation on every iteration
+    const String morningPeriod = 'Morning (5:00 - 11:59)';
+    const String afternoonPeriod = 'Afternoon (12:00 - 16:59)';
+    const String eveningPeriod = 'Evening (17:00 - 21:59)';
+    const String nightPeriod = 'Night (22:00 - 4:59)';
+
     for (final ScheduleEntryEntity entry in entries) {
+      // Get time string once and cache it
       final String? timeString = entry.getDisplayTime();
       if (timeString == null) continue;
 
-      // Extract hour from time string (HH:MM format)
-      final int? hour = int.tryParse(timeString.split(':').first);
+      // Extract hour from time string (HH:MM format) - parse only once
+      final List<String> timeParts = timeString.split(':');
+      if (timeParts.isEmpty) continue;
+      
+      final int? hour = int.tryParse(timeParts[0]);
       if (hour == null) continue;
 
-      // Determine period based on hour
-      String period;
+      // Determine period based on hour - use pre-defined constants
+      final String period;
       if (hour >= 5 && hour < 12) {
-        period = 'Morning (5:00 - 11:59)';
+        period = morningPeriod;
       } else if (hour >= 12 && hour < 17) {
-        period = 'Afternoon (12:00 - 16:59)';
+        period = afternoonPeriod;
       } else if (hour >= 17 && hour < 22) {
-        period = 'Evening (17:00 - 21:59)';
+        period = eveningPeriod;
       } else {
-        period = 'Night (22:00 - 4:59)';
+        period = nightPeriod;
       }
 
       // Add entry to appropriate period group
       grouped.putIfAbsent(period, () => <ScheduleEntryEntity>[]).add(entry);
     }
 
-    // Sort periods in chronological order
-    final List<String> sortedPeriods = grouped.keys.toList()
-      ..sort((String a, String b) {
-        // Extract start hour from period name for sorting
-        final int hourA = int.tryParse(a.split('(')[1].split(':')[0]) ?? 0;
-        final int hourB = int.tryParse(b.split('(')[1].split(':')[0]) ?? 0;
-        return hourA.compareTo(hourB);
-      });
-
-    // Return map with sorted periods
-    final Map<String, List<ScheduleEntryEntity>> sortedGrouped =
-        <String, List<ScheduleEntryEntity>>{};
-    for (final String period in sortedPeriods) {
-      sortedGrouped[period] = grouped[period]!;
-    }
-
-    return sortedGrouped;
+    return grouped;
   }
 
-  /// Builds a single schedule entry item
+
+  /// Builds the empty state widget
   /// 
-  /// Displays time, route name, and destination for a schedule entry.
+  /// Displays a message prompting the user to search for a stop.
   /// 
-  /// [entry] - The schedule entry entity to display
-  /// 
-  /// Returns: Widget displaying schedule entry information
-  Widget _buildScheduleEntryItem(ScheduleEntryEntity entry) {
+  /// Returns: Widget displaying empty state message
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.schedule,
+            size: 64,
+            color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.5),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            'Search for a stop',
+            style: AppTypography.body.copyWith(
+              color: Theme.of(context).textTheme.bodyLarge?.color,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            'Enter a stop name or code above to view schedules',
+            style: AppTypography.bodySmall.copyWith(
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Extracted widget for stop list items to improve performance
+/// 
+/// This widget is extracted to allow Flutter to better optimize rebuilds.
+/// It uses const constructors where possible and caches computed values.
+class StopListItem extends StatelessWidget {
+  /// The stop entity to display
+  final StopEntity stop;
+  
+  /// Callback when the stop is tapped
+  final VoidCallback onTap;
+
+  const StopListItem({
+    super.key,
+    required this.stop,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Cache computed values to avoid recalculating on every build
+    final String stopName = stop.name ?? 'Unknown Stop';
+    final String? stopCode = stop.code;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: ListTile(
+        leading: const Icon(
+          Icons.location_on,
+          color: AppTheme.primaryColor,
+        ),
+        title: Text(
+          stopName,
+          style: AppTypography.body.copyWith(
+            color: Theme.of(context).textTheme.bodyLarge?.color,
+          ),
+        ),
+        subtitle: stopCode != null
+            ? Text(
+                'Code: $stopCode',
+                style: AppTypography.bodySmall.copyWith(
+                  color: Theme.of(context).textTheme.bodySmall?.color,
+                ),
+              )
+            : null,
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+/// Extracted widget for schedule entry items to improve performance
+/// 
+/// This widget is extracted to allow Flutter to better optimize rebuilds.
+/// It pre-computes display values to avoid repeated string operations.
+class ScheduleEntryItem extends StatelessWidget {
+  /// The schedule entry entity to display
+  final ScheduleEntryEntity entry;
+
+  const ScheduleEntryItem({
+    super.key,
+    required this.entry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Pre-compute display values once to avoid repeated calls
     final String? displayTime = entry.getDisplayTime();
     final String routeName = entry.getRouteDisplayName();
     final String? headsign = entry.getTripHeadsign();
@@ -445,46 +640,26 @@ class _SchedulesTabViewState extends ConsumerState<SchedulesTabView> {
         ),
         title: Text(
           routeName,
-          style: AppTypography.body,
+          style: AppTypography.body.copyWith(
+            color: Theme.of(context).textTheme.bodyLarge?.color,
+          ),
         ),
         subtitle: headsign != null
             ? Text(
                 headsign,
-                style: AppTypography.bodySmall,
+                style: AppTypography.bodySmall.copyWith(
+                  color: Theme.of(context).textTheme.bodySmall?.color,
+                ),
               )
             : null,
         trailing: const Icon(Icons.directions_transit),
-      ),
-    );
-  }
-
-  /// Builds the empty state widget
-  /// 
-  /// Displays a message prompting the user to search for a stop.
-  /// 
-  /// Returns: Widget displaying empty state message
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.schedule,
-            size: 64,
-            color: Colors.white.withValues(alpha: 0.5),
-          ),
-          const SizedBox(height: AppSpacing.md),
-          Text(
-            'Search for a stop',
-            style: AppTypography.body,
-          ),
-          const SizedBox(height: AppSpacing.xs),
-          Text(
-            'Enter a stop name or code above to view schedules',
-            style: AppTypography.bodySmall,
-            textAlign: TextAlign.center,
-          ),
-        ],
+        onTap: () {
+          // Navigate to schedule detail screen with entry data
+          context.push(
+            '/schedule/detail',
+            extra: entry,
+          );
+        },
       ),
     );
   }

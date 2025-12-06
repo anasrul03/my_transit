@@ -11,7 +11,13 @@
             "program": "lib/main.dart",
             "args": [
                 "--dart-define",
-                "ACCESS_TOKEN=pk.your_mapbox_token_here"
+                "ACCESS_TOKEN=pk.eyJ1IjoibXVoZGx1YmVnYSIsImEiOiJjbWg0cGpyZGMxdWhsajBxMXNqZmdremlnIn0.RMLNS8xRqeR_rKZasskp6w",
+                "--dart-define",
+                "SUPABASE_URL=https://ztsfkugbvwymselktoxa.supabase.co",
+                "--dart-define",
+                "SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp0c2ZrdWdidnd5bXNlbGt0b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUwMDAwMjAsImV4cCI6MjA4MDU3NjAyMH0.iauUKqDf6UzjVj0r1HObXV533JIpRR-3VUsRkXf2ecY",
+                "--dart-define",
+                "MAPBOX_ACCESS_TOKEN=pk.eyJ1IjoibXVoZGx1YmVnYSIsImEiOiJjbWg0cGpyZGMxdWhsajBxMXNqZmdremlnIn0.RMLNS8xRqeR_rKZasskp6w"
             ]
         },
         {
@@ -22,7 +28,13 @@
             "flutterMode": "profile",
             "args": [
                 "--dart-define",
-                "ACCESS_TOKEN=pk.your_mapbox_token_here"
+                "ACCESS_TOKEN=pk.eyJ1IjoibXVoZGx1YmVnYSIsImEiOiJjbWg0cGpyZGMxdWhsajBxMXNqZmdremlnIn0.RMLNS8xRqeR_rKZasskp6w",
+                "--dart-define",
+                "SUPABASE_URL=https://ztsfkugbvwymselktoxa.supabase.co",
+                "--dart-define",
+                "SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp0c2ZrdWdidnd5bXNlbGt0b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUwMDAwMjAsImV4cCI6MjA4MDU3NjAyMH0.iauUKqDf6UzjVj0r1HObXV533JIpRR-3VUsRkXf2ecY",
+                "--dart-define",
+                "MAPBOX_ACCESS_TOKEN=pk.eyJ1IjoibXVoZGx1YmVnYSIsImEiOiJjbWg0cGpyZGMxdWhsajBxMXNqZmdremlnIn0.RMLNS8xRqeR_rKZasskp6w"
             ]
         },
         {
@@ -33,7 +45,13 @@
             "flutterMode": "release",
             "args": [
                 "--dart-define",
-                "ACCESS_TOKEN=pk.your_mapbox_token_here"
+                "ACCESS_TOKEN=pk.eyJ1IjoibXVoZGx1YmVnYSIsImEiOiJjbWg0cGpyZGMxdWhsajBxMXNqZmdremlnIn0.RMLNS8xRqeR_rKZasskp6w",
+                "--dart-define",
+                "SUPABASE_URL=https://ztsfkugbvwymselktoxa.supabase.co",
+                "--dart-define",
+                "SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp0c2ZrdWdidnd5bXNlbGt0b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUwMDAwMjAsImV4cCI6MjA4MDU3NjAyMH0.iauUKqDf6UzjVj0r1HObXV533JIpRR-3VUsRkXf2ecY",
+                "--dart-define",
+                "MAPBOX_ACCESS_TOKEN=pk.eyJ1IjoibXVoZGx1YmVnYSIsImEiOiJjbWg0cGpyZGMxdWhsajBxMXNqZmdremlnIn0.RMLNS8xRqeR_rKZasskp6w"
             ]
         }
     ]

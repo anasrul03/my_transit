@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../constants/env_constants.dart';
+import 'session_manager.dart';
 
 /// Service for managing Supabase client initialization and access
 /// 
@@ -55,5 +56,23 @@ class SupabaseService {
   /// 
   /// Returns: GoTrueClient instance for authentication operations
   static GoTrueClient get auth => client.auth;
+  
+  /// Waits for the initial session restoration to complete
+  /// 
+  /// This method ensures that Supabase has restored the session from secure
+  /// storage before proceeding. This is important to prevent checking
+  /// authentication status before the session is available, which would
+  /// incorrectly show the user as logged out after app restarts.
+  /// 
+  /// Returns: Future that completes when initial session restoration is done
+  /// 
+  /// Note: This should be called after Supabase.initialize() and before
+  /// checking authentication status. If Supabase is not configured, this
+  /// returns immediately.
+  static Future<void> waitForSessionRestoration() async {
+    // Use the global session manager instance to wait for session restoration
+    // The session manager will handle waiting for auth state restoration
+    await sessionManager.initialize();
+  }
 }
 
