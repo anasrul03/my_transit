@@ -20,6 +20,10 @@
 -keep class com.google.protobuf.** { *; }
 -dontwarn com.google.protobuf.**
 
+# Keep Google Play Core classes (optional dependency for Flutter)
+-keep class com.google.android.play.core.** { *; }
+-dontwarn com.google.android.play.core.**
+
 # Keep Riverpod state management classes
 -keep class com.riverpod.** { *; }
 -keepclassmembers class * {
